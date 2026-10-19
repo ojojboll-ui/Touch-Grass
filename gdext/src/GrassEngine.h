@@ -136,6 +136,11 @@ public:
 
     void setMaster (float gain) noexcept { masterTarget = std::clamp (gain, 0.0f, 2.0f); }
 
+    /** How bright the strings sound, 0..1: a lowpass over them from about
+        900 Hz to the top of hearing. The hand sets it from how deep it is in
+        the grass, so pressing in opens the sound as well as raising it. */
+    void setTone (float tone01) noexcept { toneTarget = std::clamp (tone01, 0.0f, 1.0f); }
+
     void allOff() noexcept
     {
         pendingCount = 0;
@@ -176,6 +181,15 @@ public:
 
             for (auto& v : plucks)
                 strings += v.process();
+
+            // tone: a one-pole TPT lowpass, its cutoff gliding with the hand
+            tone += (toneTarget - tone) * 0.002f;
+            const float fc = std::min (900.0f * std::exp2 (tone * 4.2f), 0.45f * (float) sampleRate);
+            const float g  = std::tan (3.14159265f * fc / (float) sampleRate);
+            const float v  = (strings - toneState) * (g / (1.0f + g));
+            const float lp = v + toneState;
+            toneState = lp + v;
+            strings = lp;
 
             // The pad's level and the master glide, so a slider never steps.
             droneLevel += (droneTarget - droneLevel) * 0.0005f;
@@ -365,6 +379,7 @@ private:
     float ensembleMix = 0.5f;
     float delaySend = 0.22f, delayFeedback = 0.38f, delayBpm = 72.0f;
     float masterTarget = 0.8f, master = 0.8f;
+    float toneTarget = 0.75f, tone = 0.75f, toneState = 0.0f;
 };
 
 } // namespace touchgrass

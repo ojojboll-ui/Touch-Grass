@@ -52,6 +52,7 @@ void GrassSynth::set_delay (float send_, float feedback, float bpm) { send (Synt
 void GrassSynth::set_ensemble (float mix)               { send (SynthCommand::Ensemble, 0, mix); }
 void GrassSynth::set_master (float gain)                { send (SynthCommand::Master, 0, gain); }
 void GrassSynth::all_off()                              { send (SynthCommand::AllOff); }
+void GrassSynth::set_tone (float tone)                  { send (SynthCommand::Tone, 0, tone); }
 
 int GrassSynth::get_string_midi (int index) const
 {
@@ -78,6 +79,7 @@ void GrassSynth::_bind_methods()
     ClassDB::bind_method (D_METHOD ("set_ensemble", "mix"), &GrassSynth::set_ensemble);
     ClassDB::bind_method (D_METHOD ("set_master", "gain"), &GrassSynth::set_master);
     ClassDB::bind_method (D_METHOD ("all_off"), &GrassSynth::all_off);
+    ClassDB::bind_method (D_METHOD ("set_tone", "tone"), &GrassSynth::set_tone);
     ClassDB::bind_method (D_METHOD ("get_string_count"), &GrassSynth::get_string_count);
     ClassDB::bind_method (D_METHOD ("get_string_midi", "index"), &GrassSynth::get_string_midi);
     ClassDB::bind_method (D_METHOD ("get_voice_names"), &GrassSynth::get_voice_names);
@@ -120,6 +122,7 @@ void GrassSynthPlayback::apply (const SynthCommand& c)
         case SynthCommand::Ensemble:        e.setEnsembleMix (c.a); break;
         case SynthCommand::Master:          e.setMaster (c.a); break;
         case SynthCommand::AllOff:          e.allOff(); break;
+        case SynthCommand::Tone:            e.setTone (c.a); break;
         default: break;
     }
 }

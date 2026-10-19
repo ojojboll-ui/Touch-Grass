@@ -38,7 +38,11 @@ const SIZE_HOME := 0.2
 const NEAR_RANGE := Vector2(0.5, 2.2)
 const GRASS_TOP := 0.95        # metres above the ground the palm hovers at
 const DIP_RANGE := 0.7         # how far it can sink into the grass
-const DEPTH_GAIN := 1.6        # dip per unit of log(size / baseline)
+# How deep the hand is in the grass, from its image size alone, as in Handsynt:
+# SIZE_HOME hovers at the tips, SIZE_DEEP is all the way in. Absolute rather
+# than relative to where the hand came into view, which made a hand that
+# entered already reaching forward treat that as rest and never dip.
+const SIZE_DEEP := 0.34
 
 const CHAINS := {
 	"Thumb": [["Metacarpal", 1, 2], ["Proximal", 2, 3], ["Distal", 3, 4]],
@@ -68,7 +72,6 @@ var _bone := {}
 var _rest_global := {}
 var _rest_frame: Basis
 var _target := Vector3.ZERO
-var _baseline := -1.0
 var _seen_for := 0.0
 var _last_points := {}
 var _placed := false
@@ -127,14 +130,8 @@ func update_hand(h: Dictionary, delta: float) -> void:
 		return
 
 	var pos: Vector3 = h.pos
-	# depth: the hand's size in the image against where it settled after appearing
 	_seen_for += delta
-	if _baseline < 0.0 or _seen_for < 0.4:
-		_baseline = pos.z if _baseline < 0.0 or _seen_for < delta * 1.5 else lerpf(_baseline, pos.z, 0.2)
-	else:
-		_baseline = lerpf(_baseline, pos.z, 1.0 - exp(-delta / 30.0))
-	var rel := log(max(pos.z, 1e-3) / max(_baseline, 1e-3))
-	var want := clampf(rel * DEPTH_GAIN, -0.25, 1.0)
+	var want := clampf(log(max(pos.z, 1e-3) / SIZE_HOME) / log(SIZE_DEEP / SIZE_HOME), -0.25, 1.0)
 	# a fist lifts the hand up out of the grass: it rests there and touches nothing
 	lifted = lerpf(lifted, 1.0 if h.get("gesture", "") == "fist" else 0.0, 1.0 - exp(-delta / 0.15))
 	want = lerpf(want, -0.7, lifted)

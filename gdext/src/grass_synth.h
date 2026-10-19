@@ -17,7 +17,7 @@ namespace godot
 /** What the game asks of the instrument, carried to the audio thread. */
 struct SynthCommand
 {
-    enum Type : int { Pluck, Chord, Voice, Ring, Drone, DroneBrightness, Delay, Ensemble, Master, AllOff };
+    enum Type : int { Pluck, Chord, Voice, Ring, Drone, DroneBrightness, Delay, Ensemble, Master, AllOff, Tone };
     int   type;
     int   i;
     float a, b, c;
@@ -81,6 +81,7 @@ public:
     void set_delay (float send, float feedback, float bpm);
     void set_ensemble (float mix);
     void set_master (float gain);
+    void set_tone (float tone);
     void all_off();
 
     int get_string_count() const { return strings.count; }

@@ -170,6 +170,30 @@ int main()
         CHECK (rms (q, 1.5, 2.0) < held * 0.05f, "drone level 0 fades it out (%.5f)", rms (q, 1.5, 2.0));
     }
 
+    // Tone: the same sweep with the strings closed and open. The energy of the
+    // first difference against the signal's is a plain brightness measure.
+    {
+        auto brightness = [] (float tone)
+        {
+            touchgrass::GrassEngine e;
+            e.prepare (kRate);
+            e.setDroneLevel (0.0f);
+            e.setDelay (0.0f, 0.0f, 72.0f);
+            e.setEnsembleMix (0.0f);
+            e.setTone (tone);
+            e.setChord (0, touchgrass::GrassEngine::kMajor);
+            std::vector<float> l ((size_t) kRate), r ((size_t) kRate);
+            e.render (l.data(), r.data(), (int) (kRate * 0.5));      // let the tone settle
+            for (int s = 0; s < 13; ++s) e.pluck (s, 0.8f, s * 400);
+            e.render (l.data(), r.data(), (int) kRate);
+            double sig = 0.0, dif = 0.0;
+            for (size_t i = 1; i < l.size(); ++i) { sig += l[i] * l[i]; dif += (l[i] - l[i - 1]) * (l[i] - l[i - 1]); }
+            return dif / std::max (sig, 1e-12);
+        };
+        const double dark = brightness (0.0f), open = brightness (1.0f);
+        CHECK (open > dark * 2.0, "tone 1 is brighter than tone 0 (%.4f vs %.4f)", open, dark);
+    }
+
     writeWav ("enginetest.wav", a);
     std::printf (failures ? "\n%d FAILED\n" : "\nall passed, listen to test/enginetest.wav\n", failures);
     return failures ? 1 : 0;

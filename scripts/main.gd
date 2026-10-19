@@ -20,7 +20,7 @@ const HandInput := preload("res://scripts/hand_input.gd")
 const HandView := preload("res://scripts/hand_view.gd")
 const Sound := preload("res://scripts/sound.gd")
 const StrumPlate := preload("res://scripts/strum_plate.gd")
-const FlowerRing := preload("res://scripts/flower_ring.gd")
+const ChordWheel := preload("res://scripts/chord_wheel.gd")
 const Pollen := preload("res://scripts/pollen.gd")
 
 var terrain: Node3D
@@ -34,7 +34,13 @@ var hand_input: Node
 var hand_views := {}
 var sound: Node
 var strum: Node
-var ring: Node3D
+var ring: Control
+## Doppa: the right hand only strums once it has sunk into the grass (reached
+## toward the webcam). D toggles it against plain hovering, to compare.
+var dip_mode := true
+var _dip_on := false
+const DIP_ON := 0.22
+const DIP_OFF := 0.12
 var pollen: Node3D
 
 var args := {}
@@ -91,10 +97,6 @@ func _ready() -> void:
 	strum = StrumPlate.new()
 	strum.synth = sound.synth
 	add_child(strum)
-	ring = FlowerRing.new()
-	ring.synth = sound.synth
-	add_child(ring)
-	ring.build(terrain, cam)
 	pollen = Pollen.new()
 	add_child(pollen)
 	strum.plucked.connect(_on_pluck)
@@ -112,6 +114,10 @@ func _ready() -> void:
 	ui = UI.new()
 	add_child(ui)
 	ui.build(cam, tod)
+	ring = ChordWheel.new()
+	ring.synth = sound.synth
+	ui.add_child(ring)
+	ui.move_child(ring, 0)
 	ui.panel.visible = not args.has("noui")
 
 	if args.has("hour"):
@@ -142,6 +148,7 @@ func _process(delta: float) -> void:
 		line += "   ·   inget ljud (GrassSynth saknas)"
 	else:
 		line += "   ·   ackord " + ring.current_name()
+	line += "   ·   " + ("doppa för att spela (D)" if dip_mode else "sväva (D)")
 	ui.set_status(line)
 	if args.has("handcam"):
 		# test view: a close look at one hand from behind and above, or from the side
@@ -165,20 +172,32 @@ func _process(delta: float) -> void:
 	orb.global_position = _hand_pos + Vector3(0, 0.55, 0)
 
 
-## The right hand strums the plate, the left picks chords on the flower ring.
+## The right hand strums the plate, the left picks chords on the chord wheel.
 ## With no hands in view the mouse strums while its left button is held.
 func _play(any_hand: bool, delta: float) -> void:
 	var r: Node3D = hand_views["right"]
 	var l: Node3D = hand_views["left"]
 	ring.update(l.screen_pos, l.present, l.fingers, l.lifted > 0.5, delta)
 	if any_hand:
-		strum.update(r.screen_pos.x, r.present and r.lifted < 0.5, clampf(r.dip, 0.0, 1.0), delta)
+		var depth := clampf(r.dip, 0.0, 1.0)
+		_dip_on = r.present and r.dip > (DIP_OFF if _dip_on else DIP_ON)
+		var playing: bool = r.present and r.lifted < 0.5 and (_dip_on or not dip_mode)
+		strum.update(r.screen_pos.x, playing, depth, delta)
+		# deeper in the grass is louder (in the pluck strength) and brighter
+		if sound.synth and sound.synth.has_method("set_tone"):
+			sound.synth.set_tone(0.3 + 0.7 * depth)
 	else:
 		var vp := get_viewport().get_visible_rect().size
 		var mx := get_viewport().get_mouse_position().x / vp.x
 		if _scripted:
 			mx = _scripted_x
 		strum.update(mx, (_hand_on and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)) or _scripted, 0.4, delta)
+
+
+func _unhandled_key_input(event: InputEvent) -> void:
+	var k := event as InputEventKey
+	if k and k.pressed and not k.echo and k.keycode == KEY_D:
+		dip_mode = not dip_mode
 
 
 func _on_pluck(_string_index: int, velocity: float) -> void:
