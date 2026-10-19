@@ -20,8 +20,14 @@ extends Node3D
 ## parent first, swings by the shortest arc so its +Y points along its
 ## segment. The model keeps its own bone lengths.
 
-const SCREEN_SHARE := 0.17     # hand length as a share of the picture's height
+const SCREEN_SHARE := 0.24     # hand length as a share of the picture's height
 const HAND_LEN := 0.2          # the model's wrist-to-fingertip length in metres
+# Sideways, each hand has its own centre: hands held together sit apart in the
+# camera image (palms about 0.3 and 0.7 across), and they should meet in the
+# middle of the picture, while shoulder width still reaches the edges.
+const GAP_X := 0.19
+const GAIN_X := 2.3
+const GAIN_Y := 1.25
 const GRASS_TOP := 0.95        # metres above the ground the palm hovers at
 const DIP_RANGE := 0.7         # how far it can sink into the grass
 const DEPTH_GAIN := 1.6        # dip per unit of log(size / baseline)
@@ -122,7 +128,10 @@ func update_hand(h: Dictionary, delta: float) -> void:
 	dip = lerpf(dip, want, 1.0 - exp(-delta / 0.12))
 
 	var vp := get_viewport().get_visible_rect().size
-	var sp := Vector2(0.5 + (pos.x - 0.5) * 1.25, 0.5 + (pos.y - 0.5) * 1.25) * vp
+	var home := 0.5 - GAP_X if label == "left" else 0.5 + GAP_X
+	var sx := clampf(0.5 + (pos.x - home) * GAIN_X, -0.05, 1.05)
+	var sy := clampf(0.5 + (pos.y - 0.5) * GAIN_Y, -0.05, 1.05)
+	var sp := Vector2(sx, sy) * vp
 	var hover := GRASS_TOP - dip * DIP_RANGE
 	var from := cam.project_ray_origin(sp)
 	var dir := cam.project_ray_normal(sp)
@@ -141,7 +150,7 @@ func update_hand(h: Dictionary, delta: float) -> void:
 	global_position = global_position.lerp(_target, 1.0 - exp(-delta / 0.05))
 	var view_h := 2.0 * cam.global_position.distance_to(global_position) * tan(deg_to_rad(cam.fov) * 0.5)
 	var k := 1.0 - exp(-delta / 0.4)
-	_scale = lerpf(_scale, clampf(SCREEN_SHARE * view_h / HAND_LEN, 1.5, 9.0), k)
+	_scale = lerpf(_scale, clampf(SCREEN_SHARE * view_h / HAND_LEN, 1.5, 32.0), k)
 	_pitch = lerpf(_pitch, cam.hand_pitch(), k)
 	scale = Vector3.ONE * _scale
 

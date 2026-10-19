@@ -104,8 +104,8 @@ func _ready() -> void:
 
 
 func _process(delta: float) -> void:
-	grass.follow_camera(cam.global_position)
-	terrain.material.set_shader_parameter("cam_xz", Vector2(cam.global_position.x, cam.global_position.z))
+	grass.follow_camera(cam.focus())
+	terrain.material.set_shader_parameter("cam_xz", Vector2(cam.focus().x, cam.focus().z))
 	_follow_view()
 	var touches := []
 	var any_hand := false

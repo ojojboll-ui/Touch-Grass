@@ -43,7 +43,7 @@ varying float shade;
 varying float far;
 
 float density_at(float d) {
-	return max(320.0 * exp(-max(d - 6.0, 0.0) / 7.0), 2.5);
+	return max(320.0 * exp(-max(d - 8.0, 0.0) / 8.0), 2.5);
 }
 
 float gust_at(vec2 p) {

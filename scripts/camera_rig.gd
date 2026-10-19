@@ -4,11 +4,14 @@ extends Camera3D
 
 signal view_changed(index: int, title: String)
 
+## All views look down on the meadow: in play the top view worked best and the
+## one down among the blades did not work at all (2026-10-19). They differ in
+## how steeply and from which side. Heights are above the ground below.
 const VIEWS := [
-	{"title": "Snett över fältet", "pos": Vector3(7.0, 5.2, 8.5), "look": Vector3(-0.5, 0.2, -2.0), "fov": 52.0, "reach": Vector2(4.0, 15.0), "pitch": 70.0},
-	{"title": "Bland stråna", "pos": Vector3(1.5, 0.75, 7.5), "look": Vector3(-1.0, 0.9, -4.0), "fov": 58.0, "reach": Vector2(2.6, 4.5), "pitch": 35.0},
-	{"title": "Kullen", "pos": Vector3(-16.0, 7.5, 20.0), "look": Vector3(2.0, 1.0, -14.0), "fov": 55.0, "reach": Vector2(6.0, 20.0), "pitch": 60.0},
-	{"title": "Ovanifrån", "pos": Vector3(0.5, 14.0, 4.0), "look": Vector3(0.0, 0.0, -1.0), "fov": 50.0, "reach": Vector2(8.0, 16.0), "pitch": 85.0},
+	{"title": "Ovanifrån", "pos": Vector3(0.5, 14.0, 3.0), "look": Vector3(0.0, 0.0, -1.0), "fov": 50.0, "pitch": 85.0},
+	{"title": "Snett ovanifrån", "pos": Vector3(3.5, 11.0, 4.5), "look": Vector3(-0.5, 0.0, -1.0), "fov": 52.0, "pitch": 78.0},
+	{"title": "Diagonalt", "pos": Vector3(7.0, 11.5, 7.0), "look": Vector3(-1.0, 0.0, -1.0), "fov": 52.0, "pitch": 72.0},
+	{"title": "Kullen", "pos": Vector3(-11.0, 17.0, 14.0), "look": Vector3(1.0, 0.0, -2.0), "fov": 55.0, "pitch": 68.0},
 ]
 const GLIDE_SECONDS := 3.0
 
@@ -18,11 +21,13 @@ var _from := {}
 var _to := {}
 var _t := 1.0
 var _time := 0.0
+var _focus := Vector3.ZERO
 
 
 func _ready() -> void:
 	_to = _resolved(VIEWS[0])
 	_from = _to
+	_focus = _to.look
 	_place(_to)
 
 
@@ -50,10 +55,16 @@ func next() -> void:
 	go_to(index + 1)
 
 
-## How far along a ray from the camera a hand may be placed in this view: the
-## low views would otherwise send it to the horizon.
+## How far along a ray from the camera a hand may be placed: round the
+## distance to the ground in the middle of the picture.
 func reach() -> Vector2:
-	return VIEWS[index].reach
+	var d := global_position.distance_to(focus())
+	return Vector2(d * 0.55, d * 1.6)
+
+
+## The ground point the view is centred on, gliding with the camera.
+func focus() -> Vector3:
+	return _focus
 
 
 ## How far an upright hand is tipped forward in this view: flat from above,
@@ -77,6 +88,7 @@ func _process(delta: float) -> void:
 	var e := _t * _t * (3.0 - 2.0 * _t)
 	var pos: Vector3 = _from.pos.lerp(_to.pos, e)
 	var look: Vector3 = _from.look.lerp(_to.look, e)
+	_focus = look
 	# arc a little upward mid-glide so a move between low and high views does not skim the grass
 	pos.y += sin(e * PI) * 0.15 * _from.pos.distance_to(_to.pos)
 	var breath := Vector3(sin(_time * 0.21), sin(_time * 0.17 + 1.3) * 0.6, cos(_time * 0.13)) * 0.06

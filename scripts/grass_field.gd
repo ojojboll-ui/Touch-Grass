@@ -9,9 +9,9 @@ const TILE := 5.0
 const EXTENT := 95.0              # tiles cover -EXTENT..EXTENT on x and z
 # per_side blades along a tile edge, blade segments, reach in metres
 const LODS := [
-	{"per_side": 90, "segments": 6, "reach": 12.6},
-	{"per_side": 56, "segments": 4, "reach": 21.3},
-	{"per_side": 30, "segments": 2, "reach": 34.1},
+	{"per_side": 90, "segments": 6, "reach": 15.5},
+	{"per_side": 56, "segments": 4, "reach": 25.5},
+	{"per_side": 30, "segments": 2, "reach": 40.0},
 	{"per_side": 12, "segments": 1, "reach": 80.0},
 ]
 
@@ -80,7 +80,8 @@ func _tile_high(terrain: Node3D, p: Vector3) -> float:
 	return hi
 
 
-## Pick each tile's level from the camera's ground position.
+## Pick each tile's level from the ground point the view is centred on, so
+## the dense blades are where the player looks however high the camera is.
 func follow_camera(cam_pos: Vector3) -> void:
 	var c := Vector2(cam_pos.x, cam_pos.z)
 	for m in materials:
