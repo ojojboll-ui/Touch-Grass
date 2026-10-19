@@ -30,18 +30,27 @@ void GrassSynth::send (int type, int i, float a, float b, float c)
 
 void GrassSynth::set_chord (int root, int quality)
 {
-    chordtroller::music::Chord c;
-    c.rootPitchClass = ((root % 12) + 12) % 12;
-    c.quality = quality == 1 ? chordtroller::music::Quality::minor
-              : quality == 2 ? chordtroller::music::Quality::dominant7
-                             : chordtroller::music::Quality::major;
-    strings.build (c);
+    strings = touchgrass::GrassEngine::plate (root, quality);
     send (SynthCommand::Chord, root, (float) quality);
 }
 
 void GrassSynth::pluck (int string_index, float velocity, float delay_seconds)
 {
     send (SynthCommand::Pluck, string_index, velocity, delay_seconds);
+}
+
+void GrassSynth::pluck_note (int midi_note, float velocity, float delay_seconds)
+{
+    send (SynthCommand::PluckNote, midi_note, velocity, delay_seconds);
+}
+
+PackedInt32Array GrassSynth::get_plate (int root, int quality) const
+{
+    const auto s = touchgrass::GrassEngine::plate (root, quality);
+    PackedInt32Array out;
+    for (int k = 0; k < s.count; ++k)
+        out.push_back (s.midi[(size_t) k]);
+    return out;
 }
 
 void GrassSynth::set_voice (int index)                  { send (SynthCommand::Voice, index); }
@@ -71,6 +80,8 @@ void GrassSynth::_bind_methods()
 {
     ClassDB::bind_method (D_METHOD ("set_chord", "root", "quality"), &GrassSynth::set_chord);
     ClassDB::bind_method (D_METHOD ("pluck", "string_index", "velocity", "delay_seconds"), &GrassSynth::pluck, DEFVAL (0.0f));
+    ClassDB::bind_method (D_METHOD ("pluck_note", "midi_note", "velocity", "delay_seconds"), &GrassSynth::pluck_note, DEFVAL (0.0f));
+    ClassDB::bind_method (D_METHOD ("get_plate", "root", "quality"), &GrassSynth::get_plate);
     ClassDB::bind_method (D_METHOD ("set_voice", "index"), &GrassSynth::set_voice);
     ClassDB::bind_method (D_METHOD ("set_ring", "seconds"), &GrassSynth::set_ring);
     ClassDB::bind_method (D_METHOD ("set_drone", "level"), &GrassSynth::set_drone);
@@ -111,6 +122,12 @@ void GrassSynthPlayback::apply (const SynthCommand& c)
         {
             const int delay = (int) std::lround (std::max (0.0f, c.b) * AudioServer::get_singleton()->get_mix_rate());
             e.pluck (c.i, c.a, delay);
+            break;
+        }
+        case SynthCommand::PluckNote:
+        {
+            const int delay = (int) std::lround (std::max (0.0f, c.b) * AudioServer::get_singleton()->get_mix_rate());
+            e.pluckNote (c.i, c.a, delay);
             break;
         }
         case SynthCommand::Chord:           e.setChord (c.i, (int) c.a); break;

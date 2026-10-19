@@ -113,6 +113,22 @@ int main()
         CHECK (e.stringMidi (2) == 46, "C7 drops Bb2 where G2 was (got %d)", e.stringMidi (2));
         e.setChord (9, touchgrass::GrassEngine::kMinor);
         CHECK (e.stringMidi (0) == 45 && e.stringMidi (1) == 48, "A minor starts A2 C3 (got %d %d)", e.stringMidi (0), e.stringMidi (1));
+        const auto cmaj7 = touchgrass::GrassEngine::plate (0, touchgrass::GrassEngine::kMajor7);
+        CHECK (cmaj7.midi[2] == 47, "Cmaj7 drops B2 where G2 was (got %d)", cmaj7.midi[2]);
+        const auto am7 = touchgrass::GrassEngine::plate (9, touchgrass::GrassEngine::kMinor7);
+        CHECK (am7.midi[0] == 45 && am7.midi[1] == 48 && am7.midi[2] == 43, "Am7 is A2 C3 G2 ... (got %d %d %d)", am7.midi[0], am7.midi[1], am7.midi[2]);
+    }
+    {
+        // two hands on two plates: notes from both chords sound at once
+        touchgrass::GrassEngine e;
+        e.prepare (kRate);
+        e.setChord (0, touchgrass::GrassEngine::kMajor);
+        const auto f = touchgrass::GrassEngine::plate (5, touchgrass::GrassEngine::kMajor7);
+        const auto g = touchgrass::GrassEngine::plate (7, touchgrass::GrassEngine::kMajor);
+        for (int s = 0; s < 13; ++s) { e.pluckNote (f.midi[(size_t) s], 0.7f, s * 300); e.pluckNote (g.midi[(size_t) s], 0.7f, s * 300 + 150); }
+        std::vector<float> l ((size_t) kRate), r ((size_t) kRate);
+        e.render (l.data(), r.data(), (int) (kRate * 0.1));
+        CHECK (e.activePlucks() >= 20, "plucks from two plates ring together (%d voices)", e.activePlucks());
     }
 
     const Take a = perform (512);

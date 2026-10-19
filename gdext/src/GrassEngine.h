@@ -39,7 +39,28 @@ public:
     static constexpr int kDroneVoices = 8;
     static constexpr int kMaxPending  = 128;
 
-    enum Quality { kMajor = 0, kMinor = 1, kSeventh = 2 };
+    enum Quality { kMajor = 0, kMinor = 1, kSeventh = 2, kMajor7 = 3, kMinor7 = 4 };
+
+    static chordtroller::music::Chord makeChord (int rootPitchClass, int quality) noexcept
+    {
+        using Q = chordtroller::music::Quality;
+        chordtroller::music::Chord c;
+        c.rootPitchClass = ((rootPitchClass % 12) + 12) % 12;
+        c.quality = quality == kMinor   ? Q::minor
+                  : quality == kSeventh ? Q::dominant7
+                  : quality == kMajor7  ? Q::major7
+                  : quality == kMinor7  ? Q::minor7
+                                        : Q::major;
+        return c;
+    }
+
+    /** The Omnichord's 13 strings for a chord, in plate order. */
+    static chordtroller::music::StringSet plate (int rootPitchClass, int quality) noexcept
+    {
+        chordtroller::music::StringSet s;
+        s.build (makeChord (rootPitchClass, quality));
+        return s;
+    }
 
     void prepare (double sampleRateIn)
     {
@@ -69,15 +90,11 @@ public:
 
     bool isPrepared() const noexcept { return prepared; }
 
-    /** Root 0..11 (C = 0); quality major, minor or seventh, as the Omnichord's
-        three rows of chord buttons. */
+    /** Root 0..11 (C = 0); quality major, minor, seventh, major seventh or
+        minor seventh. Sets the plate for pluck() and the chord the drone holds. */
     void setChord (int rootPitchClass, int quality) noexcept
     {
-        chordtroller::music::Chord c;
-        c.rootPitchClass = ((rootPitchClass % 12) + 12) % 12;
-        c.quality = quality == kMinor   ? chordtroller::music::Quality::minor
-                  : quality == kSeventh ? chordtroller::music::Quality::dominant7
-                                        : chordtroller::music::Quality::major;
+        const auto c = makeChord (rootPitchClass, quality);
 
         const bool changed = ! haveChord || c != chord;
         chord = c;
@@ -94,7 +111,20 @@ public:
         if (pendingCount >= kMaxPending)
             return;
 
-        pending[(size_t) pendingCount++] = { index, std::clamp (velocity, 0.0f, 1.0f), std::max (0, delaySamples) };
+        if (index < 0 || index >= strings.count)
+            return;
+
+        pluckNote (strings.midi[(size_t) index], velocity, delaySamples);
+    }
+
+    /** Pluck a note by MIDI number, whatever the plate: several plates (chords)
+        can sound at once, each hand on its own. */
+    void pluckNote (int midiNote, float velocity, int delaySamples) noexcept
+    {
+        if (pendingCount >= kMaxPending)
+            return;
+
+        pending[(size_t) pendingCount++] = { midiNote, std::clamp (velocity, 0.0f, 1.0f), std::max (0, delaySamples) };
     }
 
     void setVoice (int index) noexcept
@@ -232,7 +262,7 @@ private:
     static constexpr float kStringGain = 0.38f;
     static constexpr float kDroneGain  = 1.1f;
 
-    struct Pending { int string; float velocity; int samplesLeft; };
+    struct Pending { int note; float velocity; int samplesLeft; };
 
     void firePending() noexcept
     {
@@ -246,21 +276,22 @@ private:
                 continue;
             }
 
-            startString (p.string, p.velocity);
+            startNote (p.note, p.velocity);
             pending[(size_t) k] = pending[(size_t) --pendingCount];
         }
     }
 
-    void startString (int index, float velocity) noexcept
+    // A voice's "string" is its MIDI note: the same note struck again takes its
+    // own voice back, from whichever plate it came.
+    void startNote (int note, float velocity) noexcept
     {
-        if (index < 0 || index >= strings.count)
+        if (note < 0 || note > 127)
             return;
 
-        const int note = strings.midi[(size_t) index];
         const float freq = 440.0f * std::pow (2.0f, (float) (note - 69) / 12.0f);
 
-        allocate (index)->start (freq, velocity, decayCoefficient,
-                                 chordtroller::dsp::voiceSpec (voiceIndex), index, ++stamp);
+        allocate (note)->start (freq, velocity, decayCoefficient,
+                                chordtroller::dsp::voiceSpec (voiceIndex), note, ++stamp);
     }
 
     /** Chordtroller's rule: a ringing string takes its own note back, then a

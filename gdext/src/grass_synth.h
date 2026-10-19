@@ -17,7 +17,7 @@ namespace godot
 /** What the game asks of the instrument, carried to the audio thread. */
 struct SynthCommand
 {
-    enum Type : int { Pluck, Chord, Voice, Ring, Drone, DroneBrightness, Delay, Ensemble, Master, AllOff, Tone };
+    enum Type : int { Pluck, Chord, Voice, Ring, Drone, DroneBrightness, Delay, Ensemble, Master, AllOff, Tone, PluckNote };
     int   type;
     int   i;
     float a, b, c;
@@ -74,6 +74,8 @@ public:
 
     void set_chord (int root, int quality);
     void pluck (int string_index, float velocity, float delay_seconds);
+    void pluck_note (int midi_note, float velocity, float delay_seconds);
+    PackedInt32Array get_plate (int root, int quality) const;
     void set_voice (int index);
     void set_ring (float seconds);
     void set_drone (float level);

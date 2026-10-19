@@ -20,7 +20,7 @@ const HandInput := preload("res://scripts/hand_input.gd")
 const HandView := preload("res://scripts/hand_view.gd")
 const Sound := preload("res://scripts/sound.gd")
 const StrumPlate := preload("res://scripts/strum_plate.gd")
-const ChordWheel := preload("res://scripts/chord_wheel.gd")
+const PlateHints := preload("res://scripts/plate_hints.gd")
 const Pollen := preload("res://scripts/pollen.gd")
 const Ripples := preload("res://scripts/ripples.gd")
 
@@ -34,12 +34,13 @@ var orb: MeshInstance3D
 var hand_input: Node
 var hand_views := {}
 var sound: Node
-var strum: Node
-var ring: Control
-## Doppa: the right hand only strums once it has sunk into the grass (reached
-## toward the webcam). D toggles it against plain hovering, to compare.
+var strums := {}            # "left", "right", "mouse" -> StrumPlate
+var hints: Control
+var _drone_plate := -1
+## Doppa: a hand only strums once it has sunk into the grass (reached toward
+## the webcam). D toggles it against plain hovering, to compare.
 var dip_mode := true
-var _dip_on := false
+var _dip_on := {"left": false, "right": false}
 const DIP_ON := 0.22
 const DIP_OFF := 0.12
 var pollen: Node3D
@@ -96,15 +97,19 @@ func _ready() -> void:
 
 	sound = Sound.new()
 	add_child(sound)
-	strum = StrumPlate.new()
-	strum.synth = sound.synth
-	add_child(strum)
+	for who in ["left", "right", "mouse"]:
+		var sp := StrumPlate.new()
+		add_child(sp)
+		sp.setup(sound.synth)
+		sp.plucked.connect(_on_pluck.bind(who))
+		strums[who] = sp
+	if sound.synth:
+		sound.synth.set_chord(StrumPlate.CHORDS[2][0], StrumPlate.CHORDS[2][1])   # the middle plate until one is played
 	pollen = Pollen.new()
 	add_child(pollen)
 	ripples = Ripples.new()
 	ripples.grass = grass
 	add_child(ripples)
-	strum.plucked.connect(_on_pluck)
 
 	hand_input = HandInput.new()
 	if args.has("nolaunch"):
@@ -119,10 +124,10 @@ func _ready() -> void:
 	ui = UI.new()
 	add_child(ui)
 	ui.build(cam, tod)
-	ring = ChordWheel.new()
-	ring.synth = sound.synth
-	ui.add_child(ring)
-	ui.move_child(ring, 0)
+	hints = PlateHints.new()
+	hints.strums = strums
+	ui.add_child(hints)
+	ui.move_child(hints, 0)
 	ui.panel.visible = not args.has("noui")
 
 	if args.has("hour"):
@@ -146,13 +151,15 @@ func _process(delta: float) -> void:
 	for label in hand_views:
 		var hv: Node3D = hand_views[label]
 		hv.update_hand(hand_input.hand(label), delta)
-		touches.append_array(hv.touches)
 		any_hand = any_hand or hand_input.hand(label).get("present", false)
 	var line: String = "Händer:  " + hand_input.status
 	if sound.synth == null:
 		line += "   ·   inget ljud (GrassSynth saknas)"
 	else:
-		line += "   ·   ackord " + ring.current_name()
+		for label in ["left", "right"]:
+			var p: int = strums[label].plate
+			if p >= 0:
+				line += "   ·   %s %s" % ["vänster" if label == "left" else "höger", StrumPlate.plate_name(p)]
 	line += "   ·   " + ("doppa för att spela (D)" if dip_mode else "sväva (D)")
 	ui.set_status(line)
 	if args.has("handcam"):
@@ -166,37 +173,47 @@ func _process(delta: float) -> void:
 	elif not _scripted:
 		_mouse_hand(delta)
 	_play(any_hand, delta)
-	if _hand_on:
+	# the grass gives way to a hand only while it is sounding: as the strings it
+	# crosses ring, fading half a second after the last
+	for label in hand_views:
+		var on: float = strums[label].sounding()
+		if on > 0.02:
+			for t in hand_views[label].touches:
+				var tt: Dictionary = t.duplicate()
+				tt.strength = float(tt.strength) * on
+				touches.append(tt)
+	if _hand_on and strums["mouse"].sounding() > 0.02:
 		var speed := _hand_vel.length()
 		var drag: Vector2 = _hand_vel / max(speed, 0.001) * clamp(speed / 3.0, 0.0, 1.0)
 		var press := 1.0 if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or _scripted else 0.0
-		touches.append({"pos": _hand_pos, "radius": 0.9, "drag": drag, "press": press, "strength": 0.3})
+		touches.append({"pos": _hand_pos, "radius": 0.9, "drag": drag, "press": press, "strength": 0.3 * strums["mouse"].sounding()})
 	bend.set_touches(touches)
 	grass.set_param("bend_center", bend.center)
 	orb.visible = _hand_on
 	orb.global_position = _hand_pos + Vector3(0, 0.55, 0)
 
 
-## The right hand strums the plate, the left picks chords on the chord wheel.
+## Both hands strum: each on whichever of the stacked plates it is over.
 ## With no hands in view the mouse strums while its left button is held.
 func _play(any_hand: bool, delta: float) -> void:
-	var r: Node3D = hand_views["right"]
-	var l: Node3D = hand_views["left"]
-	ring.update(l.screen_pos, l.present, l.fingers, l.lifted > 0.5, delta)
-	if any_hand:
-		var depth := clampf(r.dip, 0.0, 1.0)
-		_dip_on = r.present and r.dip > (DIP_OFF if _dip_on else DIP_ON)
-		var playing: bool = r.present and r.lifted < 0.5 and (_dip_on or not dip_mode)
-		strum.update(r.screen_pos.x, playing, depth, delta)
-		# deeper in the grass is louder (in the pluck strength) and brighter
-		if sound.synth and sound.synth.has_method("set_tone"):
-			sound.synth.set_tone(0.3 + 0.7 * depth)
-	else:
-		var vp := get_viewport().get_visible_rect().size
-		var mx := get_viewport().get_mouse_position().x / vp.x
-		if _scripted:
-			mx = _scripted_x
-		strum.update(mx, (_hand_on and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)) or _scripted, 0.4, delta)
+	var deepest := 0.0
+	for label in ["left", "right"]:
+		var hv: Node3D = hand_views[label]
+		var depth := clampf(hv.dip, 0.0, 1.0)
+		_dip_on[label] = hv.present and hv.dip > (DIP_OFF if _dip_on[label] else DIP_ON)
+		var playing: bool = hv.present and hv.lifted < 0.5 and (_dip_on[label] or not dip_mode)
+		strums[label].update(hv.screen_pos, playing, depth, delta)
+		if playing:
+			deepest = maxf(deepest, depth)
+	# deeper in the grass is louder (in the pluck strength) and brighter
+	if any_hand and sound.synth and sound.synth.has_method("set_tone"):
+		sound.synth.set_tone(0.3 + 0.7 * deepest)
+	var vp := get_viewport().get_visible_rect().size
+	var m := get_viewport().get_mouse_position() / vp
+	if _scripted:
+		m = Vector2(_scripted_x, 0.5)
+	var mouse_on: bool = not any_hand and ((_hand_on and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)) or _scripted)
+	strums["mouse"].update(m, mouse_on, 0.4, delta)
 
 
 func _unhandled_key_input(event: InputEvent) -> void:
@@ -205,11 +222,16 @@ func _unhandled_key_input(event: InputEvent) -> void:
 		dip_mode = not dip_mode
 
 
-func _on_pluck(_string_index: int, velocity: float) -> void:
-	var r: Node3D = hand_views["right"]
-	var at: Vector3 = r.global_position if r.present else _hand_pos + Vector3(0, 0.5, 0)
-	pollen.burst(at, ring.COLORS[ring.quality].lerp(Color(1, 1, 0.9), 0.4), 0.6 + velocity)
-	ripples.add(at, velocity, ring.COLORS[ring.quality])
+func _on_pluck(plate: int, _string_index: int, velocity: float, who: String) -> void:
+	var at: Vector3 = hand_views[who].global_position if hand_views.has(who) else _hand_pos + Vector3(0, 0.5, 0)
+	var col: Color = StrumPlate.COLORS[plate]
+	pollen.burst(at, col.lerp(Color(1, 1, 0.9), 0.4), 0.6 + velocity)
+	ripples.add(at, velocity, col)
+	# the drone holds the chord last played
+	if plate != _drone_plate and sound.synth:
+		_drone_plate = plate
+		var c: Array = StrumPlate.CHORDS[plate]
+		sound.synth.set_chord(c[0], c[1])
 
 
 func _mouse_hand(delta: float) -> void:
