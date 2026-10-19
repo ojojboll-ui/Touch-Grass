@@ -277,7 +277,7 @@ func _run_snapshot() -> void:
 			fps_sum += Engine.get_frames_per_second()
 			fps_n += 1
 	await RenderingServer.frame_post_draw
-	print("bend rest: ", bend.get_texture().get_image().get_pixel(4, 4))
+	print("bend rest: ", bend.get_texture().get_image().get_pixel(4, 4), "  hands: ", hand_input.status)
 	if args.has("wav"):
 		sound.save_recording(args["wav"])
 	var img := get_viewport().get_texture().get_image()

@@ -29,8 +29,21 @@ func _ready() -> void:
 
 
 func _exit_tree() -> void:
+	_stop_handtrack()
+
+
+func _notification(what: int) -> void:
+	if what == NOTIFICATION_WM_CLOSE_REQUEST or what == NOTIFICATION_PREDELETE:
+		_stop_handtrack()
+
+
+## The venv's python.exe is only a launcher that starts the real interpreter
+## as its child, so killing our pid alone left the tracker running with the
+## webcam held. Kill the whole tree. handtrack also watches for us (--exit-with)
+## in case Godot is stopped without this running, as the editor's stop button does.
+func _stop_handtrack() -> void:
 	if _pid > 0:
-		OS.kill(_pid)
+		OS.execute("taskkill", ["/PID", str(_pid), "/T", "/F"])
 		_pid = -1
 
 
@@ -75,7 +88,7 @@ func _launch() -> void:
 	if not FileAccess.file_exists(py):
 		status = "hittar inte handtrack (%s)" % py
 		return
-	var code := "import sys, runpy; sys.path.insert(0, r'%s'); sys.argv = ['handtrack', '--osc', '127.0.0.1:%d', '--osc-world', '--no-preview']; runpy.run_module('handtrack', run_name='__main__')" % [dir, PORT]
+	var code := "import sys, runpy; sys.path.insert(0, r'%s'); sys.argv = ['handtrack', '--osc', '127.0.0.1:%d', '--osc-world', '--no-preview', '--exit-with', '%d']; runpy.run_module('handtrack', run_name='__main__')" % [dir, PORT, OS.get_process_id()]
 	_pid = OS.create_process(py, ["-c", code])
 	status = "startar kameran…" if _pid > 0 else "kunde inte starta handtrack"
 
