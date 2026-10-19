@@ -2,3 +2,7 @@
 shots/
 builds/
 *.import
+bin/*.lib
+bin/*.exp
+bin/*.pdb
+gdext/build.log

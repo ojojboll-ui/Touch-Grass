@@ -8,6 +8,7 @@ extends Node3D
 ## Run with `-- --snapshot=path.png` to render a frame to disk and quit.
 ## Other flags: --cam=0..3 --hour=15 --stroke --frames=150 --bench --noui
 ## --nolaunch (never start handtrack; tests feed tools/fake_hands.py instead)
+## --strum (test sweeps while it runs) --wav=path (record the Master bus there)
 
 const Terrain := preload("res://scripts/terrain.gd")
 const GrassField := preload("res://scripts/grass_field.gd")
@@ -17,6 +18,7 @@ const CameraRig := preload("res://scripts/camera_rig.gd")
 const UI := preload("res://scripts/ui.gd")
 const HandInput := preload("res://scripts/hand_input.gd")
 const HandView := preload("res://scripts/hand_view.gd")
+const Sound := preload("res://scripts/sound.gd")
 
 var terrain: Node3D
 var grass: Node3D
@@ -27,6 +29,7 @@ var ui: CanvasLayer
 var orb: MeshInstance3D
 var hand_input: Node
 var hand_views := {}
+var sound: Node
 
 var args := {}
 var _hand_pos := Vector3.ZERO
@@ -75,6 +78,9 @@ func _ready() -> void:
 
 	orb = _make_orb()
 	add_child(orb)
+
+	sound = Sound.new()
+	add_child(sound)
 
 	hand_input = HandInput.new()
 	if args.has("nolaunch"):
@@ -196,9 +202,13 @@ func _make_orb() -> MeshInstance3D:
 
 func _run_snapshot() -> void:
 	var frames := int(args.get("frames", 150))
+	if args.has("wav"):
+		sound.start_recording()
 	var fps_sum := 0.0
 	var fps_n := 0
 	for i in frames:
+		if args.has("strum") and i % 90 == 10:
+			sound.test_strum()
 		if args.has("stroke"):
 			# sweep the stand-in hand across the meadow in front of the camera, ending mid-field
 			_scripted = true
@@ -213,6 +223,8 @@ func _run_snapshot() -> void:
 			fps_n += 1
 	await RenderingServer.frame_post_draw
 	print("bend rest: ", bend.get_texture().get_image().get_pixel(4, 4))
+	if args.has("wav"):
+		sound.save_recording(args["wav"])
 	var img := get_viewport().get_texture().get_image()
 	img.save_png(args["snapshot"])
 	print("snapshot saved: ", args["snapshot"], "  (", snappedf(fps_sum / max(fps_n, 1), 0.1), " fps)")

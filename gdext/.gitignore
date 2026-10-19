@@ -1,0 +1,7 @@
+godot-cpp/
+build/
+extension_api.json
+test/*.exe
+test/*.obj
+test/*.wav
+test/*.pdb
