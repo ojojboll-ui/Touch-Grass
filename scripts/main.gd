@@ -1,11 +1,13 @@
 extends Node3D
 ## Touch Grass. Builds the meadow, sky and camera in code.
 ##
-## Until the tracked hands arrive (stage 2) the mouse stands in for a hand:
-## hover to stroke the grass, hold the left button to press it down.
+## The hands come from handtrack (hand_input.gd starts it if it is not running).
+## While no hand is in view the mouse stands in for one: hover to stroke the
+## grass, hold the left button to press it down.
 ##
 ## Run with `-- --snapshot=path.png` to render a frame to disk and quit.
 ## Other flags: --cam=0..3 --hour=15 --stroke --frames=150 --bench --noui
+## --nolaunch (never start handtrack; tests feed tools/fake_hands.py instead)
 
 const Terrain := preload("res://scripts/terrain.gd")
 const GrassField := preload("res://scripts/grass_field.gd")
@@ -13,6 +15,8 @@ const BendField := preload("res://scripts/bend_field.gd")
 const TimeOfDay := preload("res://scripts/time_of_day.gd")
 const CameraRig := preload("res://scripts/camera_rig.gd")
 const UI := preload("res://scripts/ui.gd")
+const HandInput := preload("res://scripts/hand_input.gd")
+const HandView := preload("res://scripts/hand_view.gd")
 
 var terrain: Node3D
 var grass: Node3D
@@ -21,6 +25,8 @@ var tod: Node3D
 var cam: Camera3D
 var ui: CanvasLayer
 var orb: MeshInstance3D
+var hand_input: Node
+var hand_views := {}
 
 var args := {}
 var _hand_pos := Vector3.ZERO
@@ -54,6 +60,7 @@ func _ready() -> void:
 	grass = GrassField.new()
 	add_child(grass)
 	grass.build(terrain, gust, bend.get_texture(), bend.SIZE_M)
+	grass.visible = not args.has("nograss")
 
 	tod = TimeOfDay.new()
 	add_child(tod)
@@ -68,6 +75,16 @@ func _ready() -> void:
 
 	orb = _make_orb()
 	add_child(orb)
+
+	hand_input = HandInput.new()
+	if args.has("nolaunch"):
+		hand_input.set("_tried_launch", true)
+	add_child(hand_input)
+	for label in ["left", "right"]:
+		var hv := HandView.new()
+		add_child(hv)
+		hv.setup(label, terrain, cam)
+		hand_views[label] = hv
 
 	ui = UI.new()
 	add_child(ui)
@@ -89,15 +106,32 @@ func _ready() -> void:
 func _process(delta: float) -> void:
 	grass.follow_camera(cam.global_position)
 	terrain.material.set_shader_parameter("cam_xz", Vector2(cam.global_position.x, cam.global_position.z))
-	if not _scripted:
-		_mouse_hand(delta)
+	_follow_view()
 	var touches := []
+	var any_hand := false
+	for label in hand_views:
+		var hv: Node3D = hand_views[label]
+		hv.update_hand(hand_input.hand(label), delta)
+		touches.append_array(hv.touches)
+		any_hand = any_hand or hand_input.hand(label).get("present", false)
+	ui.set_status("Händer:  " + hand_input.status)
+	if args.has("handcam"):
+		# test view: a close look at one hand from behind and above, or from the side
+		var hv: Node3D = hand_views[args["handcam"]]
+		cam.set_process(false)
+		var off := Vector3(0.0, 1.0, 2.2) if not args.has("side") else Vector3(2.4, 0.5, 0.0)
+		cam.look_at_from_position(hv.global_position + off, hv.global_position, Vector3.UP)
+	if any_hand:
+		_hand_on = false
+	elif not _scripted:
+		_mouse_hand(delta)
 	if _hand_on:
 		var speed := _hand_vel.length()
 		var drag: Vector2 = _hand_vel / max(speed, 0.001) * clamp(speed / 3.0, 0.0, 1.0)
 		var press := 1.0 if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or _scripted else 0.0
 		touches.append({"pos": _hand_pos, "radius": 0.9, "drag": drag, "press": press, "strength": 0.3})
 	bend.set_touches(touches)
+	grass.set_param("bend_center", bend.center)
 	orb.visible = _hand_on
 	orb.global_position = _hand_pos + Vector3(0, 0.55, 0)
 
@@ -111,10 +145,25 @@ func _mouse_hand(delta: float) -> void:
 	if hit != null:
 		var h: Vector3 = hit
 		var half: float = bend.SIZE_M * 0.5 - 1.0
-		inside = abs(h.x) < half and abs(h.z) < half
+		inside = abs(h.x - bend.center.x) < half and abs(h.z - bend.center.y) < half
 		if inside:
 			_move_hand(h, delta)
 	_hand_on = inside
+
+
+## Centre the bend field on the meadow in the middle of the picture once a
+## camera glide has settled.
+func _follow_view() -> void:
+	if cam.gliding():
+		return
+	var mid := get_viewport().get_visible_rect().size * Vector2(0.5, 0.62)
+	var hit: Variant = terrain.ray_hit(cam.project_ray_origin(mid), cam.project_ray_normal(mid), 120.0)
+	if hit == null:
+		return
+	var h: Vector3 = hit
+	var c := Vector2(round(h.x), round(h.z))
+	if c.distance_to(bend.center) > 4.0:
+		bend.center = c
 
 
 func _move_hand(p: Vector3, delta: float) -> void:

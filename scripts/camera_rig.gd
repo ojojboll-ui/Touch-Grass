@@ -5,10 +5,10 @@ extends Camera3D
 signal view_changed(index: int, title: String)
 
 const VIEWS := [
-	{"title": "Snett över fältet", "pos": Vector3(7.0, 5.2, 8.5), "look": Vector3(-0.5, 0.2, -2.0), "fov": 52.0},
-	{"title": "Bland stråna", "pos": Vector3(1.5, 0.75, 7.5), "look": Vector3(-1.0, 0.9, -4.0), "fov": 58.0},
-	{"title": "Kullen", "pos": Vector3(-16.0, 7.5, 20.0), "look": Vector3(2.0, 1.0, -14.0), "fov": 55.0},
-	{"title": "Ovanifrån", "pos": Vector3(0.5, 14.0, 4.0), "look": Vector3(0.0, 0.0, -1.0), "fov": 50.0},
+	{"title": "Snett över fältet", "pos": Vector3(7.0, 5.2, 8.5), "look": Vector3(-0.5, 0.2, -2.0), "fov": 52.0, "reach": Vector2(4.0, 15.0), "pitch": 70.0},
+	{"title": "Bland stråna", "pos": Vector3(1.5, 0.75, 7.5), "look": Vector3(-1.0, 0.9, -4.0), "fov": 58.0, "reach": Vector2(2.6, 4.5), "pitch": 35.0},
+	{"title": "Kullen", "pos": Vector3(-16.0, 7.5, 20.0), "look": Vector3(2.0, 1.0, -14.0), "fov": 55.0, "reach": Vector2(6.0, 20.0), "pitch": 60.0},
+	{"title": "Ovanifrån", "pos": Vector3(0.5, 14.0, 4.0), "look": Vector3(0.0, 0.0, -1.0), "fov": 50.0, "reach": Vector2(8.0, 16.0), "pitch": 85.0},
 ]
 const GLIDE_SECONDS := 3.0
 
@@ -50,6 +50,18 @@ func next() -> void:
 	go_to(index + 1)
 
 
+## How far along a ray from the camera a hand may be placed in this view: the
+## low views would otherwise send it to the horizon.
+func reach() -> Vector2:
+	return VIEWS[index].reach
+
+
+## How far an upright hand is tipped forward in this view: flat from above,
+## nearly upright down among the blades.
+func hand_pitch() -> float:
+	return deg_to_rad(VIEWS[index].pitch)
+
+
 func title() -> String:
 	return VIEWS[index].title
 
@@ -74,3 +86,7 @@ func _process(delta: float) -> void:
 func _place(v: Dictionary) -> void:
 	fov = v.fov
 	look_at_from_position(v.pos, v.look, Vector3.UP)
+
+
+func gliding() -> bool:
+	return _t < 1.0

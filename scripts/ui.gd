@@ -8,6 +8,7 @@ var panel: PanelContainer
 var cam_button: Button
 var hour_slider: HSlider
 var hour_label: Label
+var status_label: Label
 
 
 func build(camera: Camera3D, time_of_day: Node3D) -> void:
@@ -64,9 +65,19 @@ func build(camera: Camera3D, time_of_day: Node3D) -> void:
 	hour_slider.value_changed.connect(func(v): tod.hour = v)
 	row.add_child(hour_slider)
 
+	status_label = Label.new()
+	status_label.add_theme_color_override("font_color", Color(1, 1, 1, 0.6))
+	status_label.add_theme_font_size_override("font_size", 13)
+	box.add_child(status_label)
+
 	cam.view_changed.connect(func(_i, _t): _refresh())
 	tod.changed.connect(func(_h): _refresh())
 	_refresh()
+
+
+func set_status(text: String) -> void:
+	if status_label.text != text:
+		status_label.text = text
 
 
 func _refresh() -> void:

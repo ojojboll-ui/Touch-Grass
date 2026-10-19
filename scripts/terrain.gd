@@ -72,21 +72,22 @@ func height_at(x: float, z: float) -> float:
 	return lerpf(lerpf(a, b, u), lerpf(c, d, u), v)
 
 
-## March a ray until it passes under the ground. Returns null if it never does.
-func ray_hit(from: Vector3, dir: Vector3, max_dist := 300.0) -> Variant:
+## March a ray until it passes under the ground, or under `lift` metres above
+## it. Returns null if it never does.
+func ray_hit(from: Vector3, dir: Vector3, max_dist := 300.0, lift := 0.0) -> Variant:
 	var step := 0.5
 	var prev := from
 	var t := 0.0
 	while t < max_dist:
 		t += step
 		var p := from + dir * t
-		if p.y < height_at(p.x, p.z):
+		if p.y < height_at(p.x, p.z) + lift:
 			# refine between prev and p
 			var lo := prev
 			var hi := p
 			for k in 12:
 				var m := (lo + hi) * 0.5
-				if m.y < height_at(m.x, m.z):
+				if m.y < height_at(m.x, m.z) + lift:
 					hi = m
 				else:
 					lo = m

@@ -7,11 +7,12 @@ extends SubViewport
 ## seconds. It renders in HDR so the slow return does not stall on 8-bit
 ## rounding.
 
-const SIZE_M := 32.0        # metres across, centred on the origin
+const SIZE_M := 32.0        # metres across, centred on `center`
 const RES := 256
 const MAX_TOUCHES := 12
 
 @export var recover_seconds := 2.6
+var center := Vector2.ZERO   # world x, z of the middle of the field
 
 var _decay: ColorRect
 var _stamps: Array[ColorRect] = []
@@ -61,7 +62,7 @@ func set_touches(touches: Array) -> void:
 			continue
 		var t: Dictionary = touches[k]
 		var p: Vector3 = t.pos
-		var px := Vector2((p.x / SIZE_M + 0.5) * RES, (p.z / SIZE_M + 0.5) * RES)
+		var px := Vector2(((p.x - center.x) / SIZE_M + 0.5) * RES, ((p.z - center.y) / SIZE_M + 0.5) * RES)
 		var rad: float = t.radius / SIZE_M * RES
 		r.position = px - Vector2(rad, rad)
 		r.size = Vector2(rad, rad) * 2.0

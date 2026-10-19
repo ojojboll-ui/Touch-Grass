@@ -26,6 +26,7 @@ uniform float terrain_size = 400.0;
 uniform sampler2D gust_tex : filter_linear, repeat_enable;
 uniform sampler2D bend_tex : filter_linear, repeat_disable;
 uniform float bend_size = 32.0;
+uniform vec2 bend_center = vec2(0.0);
 
 uniform float tile_size = 5.0;
 uniform float per_side = 90.0;
@@ -88,7 +89,7 @@ void vertex() {
 		+ wd * flutter * 0.07 * (0.4 + g)
 		+ wp * flutter2 * 0.05;
 
-	vec2 buv = root / bend_size + 0.5;
+	vec2 buv = (root - bend_center) / bend_size + 0.5;
 	float inside = step(0.0, buv.x) * step(buv.x, 1.0) * step(0.0, buv.y) * step(buv.y, 1.0);
 	vec4 b = textureLod(bend_tex, buv, 0.0);
 	vec2 push = (b.rg - 0.5) * 2.0 * inside;
