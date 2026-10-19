@@ -38,8 +38,9 @@ var strums := {}            # "left", "right", "mouse" -> StrumPlate
 var hints: Control
 var _drone_plate := -1
 ## Doppa: a hand only strums once it has sunk into the grass (reached toward
-## the webcam). D toggles it against plain hovering, to compare.
-var dip_mode := true
+## the webcam). Tried and found to work badly (2026-10-19), so off: hands
+## strum whenever they are in view and open. D still toggles it.
+var dip_mode := false
 var _dip_on := {"left": false, "right": false}
 const DIP_ON := 0.22
 const DIP_OFF := 0.12
@@ -173,20 +174,14 @@ func _process(delta: float) -> void:
 	elif not _scripted:
 		_mouse_hand(delta)
 	_play(any_hand, delta)
-	# the grass gives way to a hand only while it is sounding: as the strings it
-	# crosses ring, fading half a second after the last
+	# the hands touch the grass all the time; how deep they are sets how hard
 	for label in hand_views:
-		var on: float = strums[label].sounding()
-		if on > 0.02:
-			for t in hand_views[label].touches:
-				var tt: Dictionary = t.duplicate()
-				tt.strength = float(tt.strength) * on
-				touches.append(tt)
-	if _hand_on and strums["mouse"].sounding() > 0.02:
+		touches.append_array(hand_views[label].touches)
+	if _hand_on:
 		var speed := _hand_vel.length()
 		var drag: Vector2 = _hand_vel / max(speed, 0.001) * clamp(speed / 3.0, 0.0, 1.0)
 		var press := 1.0 if Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT) or _scripted else 0.0
-		touches.append({"pos": _hand_pos, "radius": 0.9, "drag": drag, "press": press, "strength": 0.3 * strums["mouse"].sounding()})
+		touches.append({"pos": _hand_pos, "radius": 0.9, "drag": drag, "press": press, "strength": 0.3})
 	bend.set_touches(touches)
 	grass.set_param("bend_center", bend.center)
 	orb.visible = _hand_on
