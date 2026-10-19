@@ -2,20 +2,14 @@ extends Node
 ## The instrument's voice: Chordtroller's engine (gdext/, the GrassSynth
 ## class) on an AudioStreamPlayer, through a "Music" bus with Godot's reverb.
 ##
-## Until the strings lie in the grass (stage 4) Space or a right click strums a
-## test sweep and steps through a little progression, so the sound can be heard
-## and judged. The status line names each chord, which shows the key arrived.
+## Space or a right click strums a test sweep over the current chord, for
+## hearing the sound without hands.
 
-const PROGRESSION := [[0, 0], [9, 1], [5, 0], [7, 2]]   # C, Am, F, G7  (root, quality)
-const NAMES := ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
-const SUFFIX := ["", "m", "7"]
 
 var synth: Object            # GrassSynth, or null if the extension did not load
 var player: AudioStreamPlayer
 var recorder: AudioEffectRecord
-var _step := 0
 var _down := false
-var last_chord := ""
 
 
 func _ready() -> void:
@@ -42,7 +36,7 @@ func _ready() -> void:
 	player.bus = "Music"
 	add_child(player)
 	player.play()
-	synth.set_chord(PROGRESSION[0][0], PROGRESSION[0][1])
+	synth.set_chord(0, 0)
 
 
 ## Sweep every string, `spread` seconds apart, up or down the plate.
@@ -57,12 +51,8 @@ func strum(down: bool, spread := 0.045, velocity := 0.7) -> void:
 func test_strum() -> void:
 	if synth == null:
 		return
-	var c: Array = PROGRESSION[_step % PROGRESSION.size()]
-	synth.set_chord(c[0], c[1])
-	last_chord = NAMES[c[0]] + SUFFIX[c[1]]
 	strum(_down)
 	_down = not _down
-	_step += 1
 
 
 ## Capture the Master bus, for tests (--wav=path).

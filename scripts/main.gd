@@ -19,6 +19,9 @@ const UI := preload("res://scripts/ui.gd")
 const HandInput := preload("res://scripts/hand_input.gd")
 const HandView := preload("res://scripts/hand_view.gd")
 const Sound := preload("res://scripts/sound.gd")
+const StrumPlate := preload("res://scripts/strum_plate.gd")
+const FlowerRing := preload("res://scripts/flower_ring.gd")
+const Pollen := preload("res://scripts/pollen.gd")
 
 var terrain: Node3D
 var grass: Node3D
@@ -30,12 +33,16 @@ var orb: MeshInstance3D
 var hand_input: Node
 var hand_views := {}
 var sound: Node
+var strum: Node
+var ring: Node3D
+var pollen: Node3D
 
 var args := {}
 var _hand_pos := Vector3.ZERO
 var _hand_vel := Vector2.ZERO
 var _hand_on := false
 var _scripted := false
+var _scripted_x := 0.5
 
 
 func _ready() -> void:
@@ -81,6 +88,16 @@ func _ready() -> void:
 
 	sound = Sound.new()
 	add_child(sound)
+	strum = StrumPlate.new()
+	strum.synth = sound.synth
+	add_child(strum)
+	ring = FlowerRing.new()
+	ring.synth = sound.synth
+	add_child(ring)
+	ring.build(terrain, cam)
+	pollen = Pollen.new()
+	add_child(pollen)
+	strum.plucked.connect(_on_pluck)
 
 	hand_input = HandInput.new()
 	if args.has("nolaunch"):
@@ -123,8 +140,8 @@ func _process(delta: float) -> void:
 	var line: String = "Händer:  " + hand_input.status
 	if sound.synth == null:
 		line += "   ·   inget ljud (GrassSynth saknas)"
-	elif sound.last_chord != "":
-		line += "   ·   ackord " + sound.last_chord
+	else:
+		line += "   ·   ackord " + ring.current_name()
 	ui.set_status(line)
 	if args.has("handcam"):
 		# test view: a close look at one hand from behind and above, or from the side
@@ -136,6 +153,7 @@ func _process(delta: float) -> void:
 		_hand_on = false
 	elif not _scripted:
 		_mouse_hand(delta)
+	_play(any_hand, delta)
 	if _hand_on:
 		var speed := _hand_vel.length()
 		var drag: Vector2 = _hand_vel / max(speed, 0.001) * clamp(speed / 3.0, 0.0, 1.0)
@@ -145,6 +163,28 @@ func _process(delta: float) -> void:
 	grass.set_param("bend_center", bend.center)
 	orb.visible = _hand_on
 	orb.global_position = _hand_pos + Vector3(0, 0.55, 0)
+
+
+## The right hand strums the plate, the left picks chords on the flower ring.
+## With no hands in view the mouse strums while its left button is held.
+func _play(any_hand: bool, delta: float) -> void:
+	var r: Node3D = hand_views["right"]
+	var l: Node3D = hand_views["left"]
+	ring.update(l.screen_pos, l.present, l.fingers, l.lifted > 0.5, delta)
+	if any_hand:
+		strum.update(r.screen_pos.x, r.present and r.lifted < 0.5, clampf(r.dip, 0.0, 1.0), delta)
+	else:
+		var vp := get_viewport().get_visible_rect().size
+		var mx := get_viewport().get_mouse_position().x / vp.x
+		if _scripted:
+			mx = _scripted_x
+		strum.update(mx, (_hand_on and Input.is_mouse_button_pressed(MOUSE_BUTTON_LEFT)) or _scripted, 0.4, delta)
+
+
+func _on_pluck(_string_index: int, velocity: float) -> void:
+	var r: Node3D = hand_views["right"]
+	var at: Vector3 = r.global_position if r.present else _hand_pos + Vector3(0, 0.5, 0)
+	pollen.burst(at, ring.COLORS[ring.quality].lerp(Color(1, 1, 0.9), 0.4), 0.6 + velocity)
 
 
 func _mouse_hand(delta: float) -> void:

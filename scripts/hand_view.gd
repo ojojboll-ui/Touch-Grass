@@ -59,6 +59,9 @@ var dip := 0.0                   # 0 at the tips, 1 sunk deep
 var in_grass := 0.0
 var lifted := 0.0               # 1 while the hand is a fist
 var touches: Array = []
+var present := false
+var screen_pos := Vector2(0.5, 0.5)   # where the hand is in the picture, 0..1, smoothed like the hand
+var fingers := 4                       # extended fingers, index to little (the thumb is not counted)
 
 var _side := "R"
 var _bone := {}
@@ -111,6 +114,7 @@ func _n(bone: String) -> String:
 ## Called every frame with this hand's latest data (empty when absent).
 func update_hand(h: Dictionary, delta: float) -> void:
 	var present: bool = h.get("present", false) and h.has("world") and h.has("pos")
+	self.present = present
 	fade = move_toward(fade, 1.0 if present else 0.0, delta / 0.3)
 	visible = fade > 0.001
 	if skeleton == null:
@@ -141,6 +145,13 @@ func update_hand(h: Dictionary, delta: float) -> void:
 	var sx := clampf(0.5 + (pos.x - home) * GAIN_X, -0.05, 1.05)
 	var sy := clampf(0.5 + (pos.y - 0.5) * GAIN_Y, -0.05, 1.05)
 	var sp := Vector2(sx, sy) * vp
+	screen_pos = Vector2(sx, sy) if _seen_for <= delta * 1.5 else screen_pos.lerp(Vector2(sx, sy), 1.0 - exp(-delta / 0.05))
+	if h.has("curl") and h.curl.size() >= 5:
+		var n := 0
+		for k in range(1, 5):
+			if h.curl[k] < 0.5:
+				n += 1
+		fingers = n
 	var hover := GRASS_TOP - dip * DIP_RANGE
 	var from := cam.project_ray_origin(sp)
 	var dir := cam.project_ray_normal(sp)
