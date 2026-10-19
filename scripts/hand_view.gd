@@ -28,9 +28,12 @@ const HAND_LEN := 0.2          # the model's wrist-to-fingertip length in metres
 const GAP_X := 0.19
 const GAIN_X := 2.3
 const GAIN_Y := 1.25
-# Nearer the webcam the hand grows, as it does in the camera image (and in
-# Handsynt's skeleton): its image size against a palm at an easy playing
-# distance, a little softened, within NEAR_RANGE.
+# Drawn back from the webcam the hand grows, toward the webcam it shrinks: the
+# webcam's depth is the height over the meadow, the hand rising toward the
+# camera above as it comes back to the player and sinking into the grass as it
+# reaches out (the user's choice, the reverse of the camera image). Its image
+# size against a palm at an easy playing distance, a little softened, within
+# NEAR_RANGE.
 const SIZE_HOME := 0.2
 const NEAR_RANGE := Vector2(0.5, 2.2)
 const GRASS_TOP := 0.95        # metres above the ground the palm hovers at
@@ -158,7 +161,7 @@ func update_hand(h: Dictionary, delta: float) -> void:
 	var k := 1.0 - exp(-delta / 0.4)
 	_scale = lerpf(_scale, clampf(SCREEN_SHARE * view_h / HAND_LEN, 1.5, 32.0), k)
 	_pitch = lerpf(_pitch, cam.hand_pitch(), k)
-	_near = lerpf(_near, clampf(pow(max(pos.z, 1e-3) / SIZE_HOME, 0.85), NEAR_RANGE.x, NEAR_RANGE.y), 1.0 - exp(-delta / 0.08))
+	_near = lerpf(_near, clampf(pow(SIZE_HOME / max(pos.z, 1e-3), 0.85), NEAR_RANGE.x, NEAR_RANGE.y), 1.0 - exp(-delta / 0.08))
 	scale = Vector3.ONE * _scale * _near
 
 	_pose(h.world)
