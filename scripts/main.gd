@@ -120,7 +120,12 @@ func _process(delta: float) -> void:
 		hv.update_hand(hand_input.hand(label), delta)
 		touches.append_array(hv.touches)
 		any_hand = any_hand or hand_input.hand(label).get("present", false)
-	ui.set_status("Händer:  " + hand_input.status)
+	var line: String = "Händer:  " + hand_input.status
+	if sound.synth == null:
+		line += "   ·   inget ljud (GrassSynth saknas)"
+	elif sound.last_chord != "":
+		line += "   ·   ackord " + sound.last_chord
+	ui.set_status(line)
 	if args.has("handcam"):
 		# test view: a close look at one hand from behind and above, or from the side
 		var hv: Node3D = hand_views[args["handcam"]]
@@ -209,6 +214,16 @@ func _run_snapshot() -> void:
 	for i in frames:
 		if args.has("strum") and i % 90 == 10:
 			sound.test_strum()
+		if args.has("spacekey") and i % 90 == 10:
+			# the real path: a Space key event through the input system
+			var ev := InputEventKey.new()
+			ev.keycode = KEY_SPACE
+			ev.physical_keycode = KEY_SPACE
+			ev.pressed = true
+			Input.parse_input_event(ev)
+			var up := ev.duplicate()
+			up.pressed = false
+			Input.parse_input_event(up)
 		if args.has("stroke"):
 			# sweep the stand-in hand across the meadow in front of the camera, ending mid-field
 			_scripted = true

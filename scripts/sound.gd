@@ -2,16 +2,20 @@ extends Node
 ## The instrument's voice: Chordtroller's engine (gdext/, the GrassSynth
 ## class) on an AudioStreamPlayer, through a "Music" bus with Godot's reverb.
 ##
-## Until the strings lie in the grass (stage 4) Space strums a test sweep and
-## steps through a little progression, so the sound can be heard and judged.
+## Until the strings lie in the grass (stage 4) Space or a right click strums a
+## test sweep and steps through a little progression, so the sound can be heard
+## and judged. The status line names each chord, which shows the key arrived.
 
 const PROGRESSION := [[0, 0], [9, 1], [5, 0], [7, 2]]   # C, Am, F, G7  (root, quality)
+const NAMES := ["C", "Db", "D", "Eb", "E", "F", "Gb", "G", "Ab", "A", "Bb", "B"]
+const SUFFIX := ["", "m", "7"]
 
 var synth: Object            # GrassSynth, or null if the extension did not load
 var player: AudioStreamPlayer
 var recorder: AudioEffectRecord
 var _step := 0
 var _down := false
+var last_chord := ""
 
 
 func _ready() -> void:
@@ -55,6 +59,7 @@ func test_strum() -> void:
 		return
 	var c: Array = PROGRESSION[_step % PROGRESSION.size()]
 	synth.set_chord(c[0], c[1])
+	last_chord = NAMES[c[0]] + SUFFIX[c[1]]
 	strum(_down)
 	_down = not _down
 	_step += 1
@@ -76,7 +81,10 @@ func save_recording(path: String) -> void:
 		wav.save_to_wav(path)
 
 
-func _unhandled_key_input(event: InputEvent) -> void:
+func _unhandled_input(event: InputEvent) -> void:
 	var k := event as InputEventKey
 	if k and k.pressed and not k.echo and k.keycode == KEY_SPACE:
+		test_strum()
+	var b := event as InputEventMouseButton
+	if b and b.pressed and b.button_index == MOUSE_BUTTON_RIGHT:
 		test_strum()
