@@ -20,6 +20,17 @@ render_mode cull_disabled, diffuse_lambert_wrap, specular_schlick_ggx;
 global uniform vec2 wind_dir;
 global uniform float wind_strength;
 global uniform float gust_speed;
+// The music, from a spectrum analyser on its bus: low (the drone), mid, high.
+global uniform vec3 music;
+
+// Rings sent out through the grass by plucked strings: x, z where, age in
+// seconds, strength (0 = unused); and each ring's colour.
+const int RIPPLES = 16;
+uniform vec4 ripples[16];
+uniform vec4 ripple_colors[16];
+const float RIPPLE_SPEED = 3.2;
+const float RIPPLE_WIDTH = 0.6;
+const float RIPPLE_LIFE = 1.8;
 
 uniform sampler2D height_tex : filter_linear, repeat_disable;
 uniform float terrain_size = 400.0;
@@ -41,6 +52,8 @@ varying vec3 low_col;
 varying vec3 high_col;
 varying float shade;
 varying float far;
+varying vec3 ripple_glow;
+varying float sparkle;
 
 float density_at(float d) {
 	return max(320.0 * exp(-max(d - 8.0, 0.0) / 8.0), 2.5);
@@ -81,6 +94,8 @@ void vertex() {
 	vec2 wd = normalize(wind_dir);
 	vec2 wp = vec2(-wd.y, wd.x);
 	float g = gust_at(root);
+	// the drone's low end leans on the wind a little, so the meadow breathes with it
+	g = clamp(g + music.x * 0.5, 0.0, 1.0);
 	float ph = hash12(root * 9.7) * TAU;
 	float flutter = sin(TIME * (2.2 + r3 * 1.6) + ph + dot(root, wd) * 1.3);
 	float flutter2 = sin(TIME * (3.1 + r3) + ph * 1.7);
@@ -88,6 +103,22 @@ void vertex() {
 		+ wd * wind_strength * (0.25 + 1.25 * g)
 		+ wd * flutter * 0.07 * (0.4 + g)
 		+ wp * flutter2 * 0.05;
+
+	// each plucked string sends a ring out through the grass from where it was
+	// touched: the blades bow outward as it passes and catch its light
+	vec3 glow = vec3(0.0);
+	for (int i = 0; i < RIPPLES; i++) {
+		vec4 rp = ripples[i];
+		if (rp.w <= 0.0) {
+			continue;
+		}
+		vec2 off = root - rp.xy;
+		float dist = length(off);
+		float ring = (dist - rp.z * RIPPLE_SPEED) / RIPPLE_WIDTH;
+		float wave = exp(-ring * ring) * rp.w * exp(-rp.z / RIPPLE_LIFE);
+		v += off / max(dist, 0.05) * wave * 0.8;
+		glow += ripple_colors[i].rgb * wave;
+	}
 
 	vec2 buv = (root - bend_center) / bend_size + 0.5;
 	float inside = step(0.0, buv.x) * step(buv.x, 1.0) * step(0.0, buv.y) * step(buv.y, 1.0);
@@ -121,6 +152,10 @@ void vertex() {
 	high_col = grass_high(root) * (0.85 + 0.3 * r2.y);
 	shade = r3;
 	far = smoothstep(10.0, 45.0, d);
+	// many rings at once (a sweep plucks a dozen) must not add up to a flood
+	ripple_glow = glow / (1.0 + length(glow));
+	// high notes make single blade tips glint, a different few each moment
+	sparkle = music.z * step(0.93, fract(r3 * 37.0 + TIME * 0.7));
 }
 
 void fragment() {
@@ -135,4 +170,5 @@ void fragment() {
 	BACKLIGHT = col * mix(1.1, 0.4, far) * along;
 	ROUGHNESS = 0.5;
 	SPECULAR = (0.35 + gust_v * 0.2) * (1.0 - far);
+	EMISSION = ripple_glow * along * along * 0.55 + vec3(1.0, 0.95, 0.8) * sparkle * along * along * 0.8;
 }

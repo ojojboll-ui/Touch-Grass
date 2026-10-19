@@ -22,6 +22,7 @@ const Sound := preload("res://scripts/sound.gd")
 const StrumPlate := preload("res://scripts/strum_plate.gd")
 const ChordWheel := preload("res://scripts/chord_wheel.gd")
 const Pollen := preload("res://scripts/pollen.gd")
+const Ripples := preload("res://scripts/ripples.gd")
 
 var terrain: Node3D
 var grass: Node3D
@@ -42,6 +43,7 @@ var _dip_on := false
 const DIP_ON := 0.22
 const DIP_OFF := 0.12
 var pollen: Node3D
+var ripples: Node
 
 var args := {}
 var _hand_pos := Vector3.ZERO
@@ -99,6 +101,9 @@ func _ready() -> void:
 	add_child(strum)
 	pollen = Pollen.new()
 	add_child(pollen)
+	ripples = Ripples.new()
+	ripples.grass = grass
+	add_child(ripples)
 	strum.plucked.connect(_on_pluck)
 
 	hand_input = HandInput.new()
@@ -204,6 +209,7 @@ func _on_pluck(_string_index: int, velocity: float) -> void:
 	var r: Node3D = hand_views["right"]
 	var at: Vector3 = r.global_position if r.present else _hand_pos + Vector3(0, 0.5, 0)
 	pollen.burst(at, ring.COLORS[ring.quality].lerp(Color(1, 1, 0.9), 0.4), 0.6 + velocity)
+	ripples.add(at, velocity, ring.COLORS[ring.quality])
 
 
 func _mouse_hand(delta: float) -> void:
@@ -296,7 +302,7 @@ func _run_snapshot() -> void:
 			fps_sum += Engine.get_frames_per_second()
 			fps_n += 1
 	await RenderingServer.frame_post_draw
-	print("bend rest: ", bend.get_texture().get_image().get_pixel(4, 4), "  hands: ", hand_input.status)
+	print("bend rest: ", bend.get_texture().get_image().get_pixel(4, 4), "  hands: ", hand_input.status, "  music: ", sound.music)
 	if args.has("wav"):
 		sound.save_recording(args["wav"])
 	var img := get_viewport().get_texture().get_image()

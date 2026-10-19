@@ -38,3 +38,7 @@ gust_speed={
 "type": "float",
 "value": 5.0
 }
+music={
+"type": "vec3",
+"value": Vector3(0, 0, 0)
+}
