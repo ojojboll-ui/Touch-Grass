@@ -28,6 +28,11 @@ const HAND_LEN := 0.2          # the model's wrist-to-fingertip length in metres
 const GAP_X := 0.19
 const GAIN_X := 2.3
 const GAIN_Y := 1.25
+# Nearer the webcam the hand grows, as it does in the camera image (and in
+# Handsynt's skeleton): its image size against a palm at an easy playing
+# distance, a little softened, within NEAR_RANGE.
+const SIZE_HOME := 0.2
+const NEAR_RANGE := Vector2(0.5, 2.2)
 const GRASS_TOP := 0.95        # metres above the ground the palm hovers at
 const DIP_RANGE := 0.7         # how far it can sink into the grass
 const DEPTH_GAIN := 1.6        # dip per unit of log(size / baseline)
@@ -63,6 +68,7 @@ var _last_points := {}
 var _placed := false
 var _pitch := deg_to_rad(70.0)
 var _scale := 4.0
+var _near := 1.0
 
 
 func setup(hand_label: String, terrain_node: Node3D, camera: Camera3D) -> void:
@@ -152,7 +158,8 @@ func update_hand(h: Dictionary, delta: float) -> void:
 	var k := 1.0 - exp(-delta / 0.4)
 	_scale = lerpf(_scale, clampf(SCREEN_SHARE * view_h / HAND_LEN, 1.5, 32.0), k)
 	_pitch = lerpf(_pitch, cam.hand_pitch(), k)
-	scale = Vector3.ONE * _scale
+	_near = lerpf(_near, clampf(pow(max(pos.z, 1e-3) / SIZE_HOME, 0.85), NEAR_RANGE.x, NEAR_RANGE.y), 1.0 - exp(-delta / 0.08))
+	scale = Vector3.ONE * _scale * _near
 
 	_pose(h.world)
 	_collect_touches(delta)
@@ -260,7 +267,7 @@ func _collect_touches(delta: float) -> void:
 		var speed := vel.length()
 		touches.append({
 			"pos": p,
-			"radius": (0.6 if key == "palm" else 0.3) * _scale / 4.0,
+			"radius": (0.6 if key == "palm" else 0.3) * _scale * _near / 4.0,
 			"drag": vel / max(speed, 0.001) * clampf(speed / 3.0, 0.0, 1.0),
 			"press": clampf(dip, 0.0, 1.0) * s,
 			"strength": 0.4 * s * fade * (1.0 - lifted),

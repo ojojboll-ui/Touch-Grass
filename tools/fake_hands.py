@@ -1,6 +1,6 @@
 """Send two synthetic hands over OSC the way handtrack does, for tests without a camera.
 
-    ../handtrack/.venv/Scripts/python tools/fake_hands.py [seconds] [--curl 0.3]
+    ../handtrack/.venv/Scripts/python tools/fake_hands.py [seconds] [--curl 0.3] [--rsize 0.35]
 
 The right hand sweeps sideways across the picture and dips toward the camera
 mid-sweep; the left hand rests at the left with its fingers half closed.
@@ -46,6 +46,7 @@ def main():
     curl = 0.25
     if "--curl" in sys.argv:
         curl = float(sys.argv[sys.argv.index("--curl") + 1])
+    rsize_fixed = float(sys.argv[sys.argv.index("--rsize") + 1]) if "--rsize" in sys.argv else None
     c = SimpleUDPClient("127.0.0.1", 9000)
     t0 = time.monotonic()
     for label in ("left", "right"):
@@ -56,6 +57,8 @@ def main():
         u = 0.5 + 0.5 * math.sin(t * 1.1)
         rx, ry = 0.40 + 0.35 * u, 0.55
         rsize = 0.22 * (1.0 + 0.35 * math.sin(math.pi * u))
+        if rsize_fixed is not None:
+            rsize = rsize_fixed
         frames = {"right": (rx, ry, rsize, hand("right", 0.12, 0.08)),
                   "left": (0.28, 0.50, 0.22, hand("left", curl, 0.05))}
         for label, (x, y, size, pts) in frames.items():
