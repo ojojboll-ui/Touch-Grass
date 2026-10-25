@@ -774,7 +774,10 @@ function worldAt(sx, sy, out) {
   return ray.ray.intersectPlane(plane, out);
 }
 
-function strum(f, sx, sy, t) {
+// tap: this is the finger landing. As in the Omnichord app, touching down on
+// the plate strikes the string under the finger; sweeping on from there plucks
+// each string crossed, and the struck one waits until the finger has left it.
+function strum(f, sx, sy, t, tap = false) {
   const n = plates[0].length;
   const band = clamp(sy, 0, 0.9999) * CHORDS.length;
   const want = Math.floor(band);
@@ -785,7 +788,14 @@ function strum(f, sx, sy, t) {
   }
   const s = (sx - STRING_LEFT) / (STRING_RIGHT - STRING_LEFT) * (n - 1);
   const dt = Math.max(1e-3, (t - f.last) / 1000);
-  if (f.prev < 0) { f.prev = s; f.last = t; return; }
+  if (f.prev < 0) {
+    f.prev = s; f.last = t;
+    if (tap) {
+      const k = clamp(Math.round(s), 0, n - 1);
+      pluckString(f, k);
+    }
+    return;
+  }
   const moved = s - f.prev;
   f.speed = lerp(f.speed, Math.abs(moved) / dt, 0.25);
   f.last = t;
@@ -796,17 +806,22 @@ function strum(f, sx, sy, t) {
     if (moved < 0) order.reverse();
     for (const k of order) {
       if (Math.abs(k - f.prev) < 1e-6 || !f.armed[k]) continue;
-      // every pluck is as loud as the next; how deep this finger is sets only
-      // this note's colour, so a soft pick on one plate never dulls another's strum
-      const vel = 0.72;
-      post({ t: "pluckNote", note: plates[f.plate][k], vel, delay: 0, bright: 0.45 + 0.55 * depthFor(f) });
-      f.armed[k] = 0;
-      f.lastPluck = performance.now();
-      onPluck(f, vel);
+      pluckString(f, k);
     }
   }
   for (let k = 0; k < n; k++) if (!f.armed[k] && Math.abs(s - k) > REARM) f.armed[k] = 1;
   f.prev = s;
+}
+
+// Every pluck is as loud as the next; how deep this finger is sets only this
+// note's colour (a tap is clear, a finger left in the grass brighter still),
+// so a soft pick on one plate never dulls another's strum.
+function pluckString(f, k) {
+  const vel = 0.72;
+  post({ t: "pluckNote", note: plates[f.plate][k], vel, delay: 0, bright: 0.7 + 0.3 * depthFor(f) });
+  f.armed[k] = 0;
+  f.lastPluck = performance.now();
+  onPluck(f, vel);
 }
 
 function onPluck(f, vel) {
@@ -839,7 +854,7 @@ canvas.addEventListener("pointerdown", (e) => {
   f.sx = sx; f.sy = sy; f.last = e.timeStamp;
   worldAt(sx, sy, f.world);
   fingers.set(e.pointerId, f);
-  strum(f, sx, sy, e.timeStamp);
+  strum(f, sx, sy, e.timeStamp, true);
   e.preventDefault();
 });
 canvas.addEventListener("pointermove", (e) => {
