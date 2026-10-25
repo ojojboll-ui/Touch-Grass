@@ -105,7 +105,7 @@ body {
 <div id="start">
   <div class="start-card">
     <h1>Touch Grass</h1>
-    <p>Dra fingrarna över ängen. Höjden på skärmen väljer ackord, i sidled knäpper du strängarna. Flera fingrar spelar flera ackord.</p>
+    <p>Dra fingrarna över ängen. Höjden på skärmen väljer ackord, i sidled knäpper du strängarna. Låt fingret ligga kvar så sjunker det djupare i gräset och klangen ljusnar.</p>
     <button id="begin" type="button">Börja</button>
     <span class="note">Fmaj7 · Am7 · Cmaj7 · Em7 · G, uppifrån och ner</span>
   </div>
@@ -692,7 +692,7 @@ function strum(f, sx, sy, t) {
     if (moved < 0) order.reverse();
     for (const k of order) {
       if (Math.abs(k - f.prev) < 1e-6 || !f.armed[k]) continue;
-      const vel = clamp(0.35 + 0.35 * clamp(f.speed / 20, 0, 1) + 0.3 * depthFor(f), 0.15, 1);
+      const vel = clamp(0.3 + 0.3 * clamp(f.speed / 20, 0, 1) + 0.4 * depthFor(f), 0.15, 1);
       post({ t: "pluckNote", note: plates[f.plate][k], vel, delay: 0 });
       f.armed[k] = 0;
       f.lastPluck = performance.now();
@@ -712,26 +712,12 @@ function onPluck(f, vel) {
   if (f.plate !== dronePlate) { dronePlate = f.plate; post({ t: "chord", root: CHORDS[f.plate][0], quality: CHORDS[f.plate][1] }); }
 }
 
-// ---- depth: the phone's tilt where the browser reports it, else the finger's speed
-let tiltOn = false, tiltRest = null, tiltDepth = 0, tiltSeen = 0;
-function tiltAxis(e) {
-  const angle = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
-  if (angle === 90) return -e.gamma;
-  if (angle === -90 || angle === 270) return e.gamma;
-  return e.beta;
-}
-function onOrientation(e) {
-  if (e.beta == null) return;
-  const a = tiltAxis(e);
-  tiltSeen = performance.now();
-  if (tiltRest === null) tiltRest = a;
-  tiltOn = true;
-  // tipping the top of the phone away from you presses into the grass
-  tiltDepth = clamp((tiltRest - a - 3) / 22, 0, 1);
-}
-window.addEventListener("orientationchange", () => { tiltRest = null; });
-
-function depthFor(f) { return tiltOn ? tiltDepth : f.depth; }
+// ---- depth: how long a finger has stayed down. A quick sweep stays light
+// and dull at the tips; a finger left in the grass sinks over about 1.5 s,
+// pressing the blades flat and opening the sound. (Tilt was tried: claude.ai
+// artifacts get no motion sensors, 2026-10-25.)
+const SINK_DELAY = 0.15, SINK_SECONDS = 1.5;
+function depthFor(f) { return f.depth; }
 
 // ---- pointers ------------------------------------------------------------------
 const canvas = renderer.domElement;
@@ -739,8 +725,9 @@ function pointerXY(e) { return [e.clientX / window.innerWidth, e.clientY / windo
 
 canvas.addEventListener("pointerdown", (e) => {
   if (!started) return;
-  canvas.setPointerCapture(e.pointerId);
+  try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* capture is a nicety */ }
   const f = newFinger(e.pointerId);
+  f.downAt = performance.now();
   const [sx, sy] = pointerXY(e);
   f.sx = sx; f.sy = sy; f.last = e.timeStamp;
   worldAt(sx, sy, f.world);
@@ -871,6 +858,7 @@ window.addEventListener("resize", resize);
 
 // ---- the frame ---------------------------------------------------------------------
 let started = false, last = performance.now(), clockTime = 0;
+let lastTone = -1, deepestDepth = 0;
 let fpsTime = 0, fpsFrames = 0, tuned = 0;
 const bendTouch = bendMat.uniforms.uTouch.value, bendDrag = bendMat.uniforms.uDrag.value;
 
@@ -881,16 +869,20 @@ function frame(now) {
   grassUniforms.uTime.value = clockTime;
   placeCamera(dt, clockTime);
 
-  // depth from speed where there is no tilt: a quick sweep presses deeper
+  // each finger sinks the longer it stays down
   let deepest = 0;
   for (const f of fingers.values()) {
-    const want = clamp(f.speed / 22, 0, 1);
-    f.depth = lerp(f.depth, want, 1 - Math.exp(-dt / (want > f.depth ? 0.05 : 0.4)));
+    f.depth = smooth(0, 1, ((now - f.downAt) / 1000 - SINK_DELAY) / SINK_SECONDS);
     f.speed *= Math.exp(-dt / 0.25);
     deepest = Math.max(deepest, depthFor(f));
   }
-  if (tiltOn && performance.now() - tiltSeen > 2000) tiltOn = false;
-  if (started) post({ t: "tone", v: 0.35 + 0.65 * (fingers.size ? deepest : (tiltOn ? tiltDepth : 0.4)) });
+  deepestDepth = deepest;
+  // the deepest finger sets the strings' tone; with no finger down it holds, so
+  // notes still ringing do not change colour as they die
+  if (started && fingers.size) {
+    const tone = 0.1 + 0.9 * deepest;
+    if (Math.abs(tone - lastTone) > 0.01) { lastTone = tone; post({ t: "tone", v: tone }); }
+  }
 
   // stamp the fingers into the bend field
   let n = 0;
@@ -899,12 +891,12 @@ function frame(now) {
     if (n >= MAX_TOUCH) break;
     const sp = f.vel.length();
     const drag = sp > 1e-3 ? f.vel.clone().multiplyScalar(clamp(sp / 3, 0, 1) / sp) : new THREE.Vector2();
-    bendTouch[n].set(f.world.x, f.world.z, 0.65 * viewScale, 0.35 + 0.65 * depthFor(f));
+    bendTouch[n].set(f.world.x, f.world.z, (0.5 + 0.35 * depthFor(f)) * viewScale, 0.15 + 0.85 * depthFor(f));
     bendDrag[n].set(drag.x, drag.y, 0.45, 0);
     f.vel.multiplyScalar(Math.exp(-dt / 0.15));
     f.sprite.position.set(f.world.x, GRASS_TOP + 0.15, f.world.z);
-    f.sprite.material.opacity = lerp(f.sprite.material.opacity, 0.35 + 0.4 * depthFor(f), 0.2);
-    f.sprite.scale.setScalar((0.9 + 0.4 * depthFor(f)) * viewScale);
+    f.sprite.material.opacity = lerp(f.sprite.material.opacity, 0.25 + 0.6 * depthFor(f), 0.2);
+    f.sprite.scale.setScalar((0.6 + 1.1 * depthFor(f)) * viewScale);
     n++;
   }
   bendMat.uniforms.uCount.value = n;
@@ -956,7 +948,7 @@ function frame(now) {
       if (fps < 42) { setBudget(budget * 0.7); tuned++; }
       else if (fps > 57 && budget < MAX_BLADES) { setBudget(budget * 1.25); tuned++; }
     }
-    window.__tg = { fps: Math.round(fps), blades: budget, worklet: !!node, floatTargets, tilt: tiltOn };
+    window.__tg = { fps: Math.round(fps), blades: budget, worklet: !!node, floatTargets, depth: +deepestDepth.toFixed(2) };
     fpsTime = 0; fpsFrames = 0;
   }
   requestAnimationFrame(frame);
@@ -967,18 +959,10 @@ $("begin").addEventListener("click", async () => {
   $("start").classList.add("gone");
   $("controls").hidden = false;
   started = true;
-  try {
-    if (typeof DeviceOrientationEvent !== "undefined" && DeviceOrientationEvent.requestPermission) {
-      const r = await DeviceOrientationEvent.requestPermission();
-      if (r === "granted") window.addEventListener("deviceorientation", onOrientation);
-    } else {
-      window.addEventListener("deviceorientation", onOrientation);
-    }
-  } catch (e) { /* no tilt: speed sets depth */ }
   try { await startAudio(); } catch (e) { showError("Ljudet kunde inte starta: " + e.message); }
   try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (e) {}
   const hint = $("hint");
-  hint.textContent = "Dra ett finger i sidled · högre eller lägre på skärmen byter ackord";
+  hint.textContent = "Dra i sidled · höjden byter ackord · låt fingret ligga kvar för djupare klang";
   hint.hidden = false;
   setTimeout(() => { hint.style.opacity = "0"; }, 6500);
 });
