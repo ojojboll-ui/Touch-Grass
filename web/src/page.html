@@ -983,6 +983,15 @@ $("begin").addEventListener("click", async () => {
   setTimeout(() => { hint.style.opacity = "0"; }, 6500);
 });
 
+// A hidden page goes quiet: switching app, locking the phone or leaving the
+// tab must not leave the drone playing somewhere unseen.
+document.addEventListener("visibilitychange", () => {
+  if (!ctx) return;
+  if (document.hidden) { post({ t: "alloff" }); ctx.suspend(); dronePlate = -1; }
+  else ctx.resume().then(() => { dronePlate = 2; post({ t: "chord", root: CHORDS[2][0], quality: CHORDS[2][1] }); });
+});
+window.addEventListener("pagehide", () => { if (ctx) ctx.close(); });
+
 $("view").addEventListener("click", () => goToView(viewIndex + 1, false));
 $("clock").addEventListener("click", () => { $("timerow").hidden = !$("timerow").hidden; });
 $("hour").addEventListener("input", (e) => applyHour(parseFloat(e.target.value)));

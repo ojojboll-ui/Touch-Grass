@@ -412,7 +412,7 @@ function TouchGrassEngine() {
     setEnsembleMix(m) { this.ensemble.mix = clamp(m, 0, 1); }
     setMaster(g) { this.masterTarget = clamp(g, 0, 2); }
     setTone(t) { this.toneTarget = clamp(t, 0, 1); }
-    allOff() { this.pending.length = 0; for (const v of this.plucks) v.stopQuickly(); for (const v of this.drone) v.noteOff(); }
+    allOff() { this.pending.length = 0; for (const v of this.plucks) v.stopQuickly(); for (const v of this.drone) v.noteOff(); this.chord = null; }
     activePlucks() { let n = 0; for (const v of this.plucks) if (v.active) n++; return n; }
 
     updateDecay() {
@@ -1408,6 +1408,15 @@ $("begin").addEventListener("click", async () => {
   hint.hidden = false;
   setTimeout(() => { hint.style.opacity = "0"; }, 6500);
 });
+
+// A hidden page goes quiet: switching app, locking the phone or leaving the
+// tab must not leave the drone playing somewhere unseen.
+document.addEventListener("visibilitychange", () => {
+  if (!ctx) return;
+  if (document.hidden) { post({ t: "alloff" }); ctx.suspend(); dronePlate = -1; }
+  else ctx.resume().then(() => { dronePlate = 2; post({ t: "chord", root: CHORDS[2][0], quality: CHORDS[2][1] }); });
+});
+window.addEventListener("pagehide", () => { if (ctx) ctx.close(); });
 
 $("view").addEventListener("click", () => goToView(viewIndex + 1, false));
 $("clock").addEventListener("click", () => { $("timerow").hidden = !$("timerow").hidden; });
