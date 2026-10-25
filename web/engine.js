@@ -388,6 +388,7 @@ function TouchGrassEngine() {
         case "chord": this.setChord(c.root, c.quality); break;
         case "tone": this.setTone(c.v); break;
         case "drone": this.setDroneLevel(c.v); break;
+        case "droneBright": this.setDroneBrightness(c.v); break;
         case "master": this.setMaster(c.v); break;
         case "voice": this.setVoice(c.v); break;
         case "ring": this.setRing(c.v); break;

@@ -88,17 +88,71 @@ body {
   transition: opacity 1.5s ease; pointer-events: none;
 }
 #err { position: fixed; inset: auto 16px 16px 16px; z-index: 6; color: var(--pollen); font-size: 0.9rem; }
+#settings {
+  position: fixed; inset: 0; z-index: 6;
+  display: grid; align-items: end; justify-items: center;
+  background: rgba(8, 14, 6, 0.45);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+}
+.sheet {
+  box-sizing: border-box; width: min(100%, 28rem); max-height: 82vh; overflow-y: auto;
+  margin-bottom: calc(16px + env(safe-area-inset-bottom, 0px));
+  background: rgba(16, 26, 13, 0.94); border: 1px solid var(--glass-edge); border-radius: 22px;
+  padding: 18px 18px 20px; display: grid; gap: 18px;
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+}
+.sheet header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.sheet h2 { margin: 0; font: 600 1.25rem var(--font-title); }
+.sheet h3 { margin: 0 0 10px; font: 600 0.78rem var(--font-ui); letter-spacing: 0.08em; text-transform: uppercase; color: var(--pollen-dim); }
+.sheet section { display: grid; gap: 10px; }
+.setting { display: grid; grid-template-columns: 5.5rem 1fr; align-items: center; gap: 12px; font-size: 0.95rem; }
+.setting input[type=range] { width: 100%; accent-color: var(--pollen); }
+.switch { display: flex; align-items: center; gap: 10px; font-size: 0.95rem; }
+.switch input { width: 20px; height: 20px; accent-color: var(--pollen); }
+.chord-row { display: grid; grid-template-columns: 12px 1fr 1fr auto; align-items: center; gap: 8px; }
+.chord-row .dot { width: 12px; height: 12px; border-radius: 50%; }
+.chord-row select {
+  font: 600 0.95rem var(--font-ui); color: var(--pollen); background: rgba(246, 231, 180, 0.08);
+  border: 1px solid var(--glass-edge); border-radius: 10px; padding: 8px 6px; min-width: 0; box-sizing: border-box; width: 100%;
+}
+.chord-row button, .row-buttons button { font-size: 0.8rem; padding: 7px 11px; }
+.chord-row button:disabled, .row-buttons button:disabled { opacity: 0.35; cursor: default; }
+.row-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
 @media (prefers-reduced-motion: reduce) { #start, #hint { transition: none; } }
 </style>
 
 <div id="stage"></div>
 <div id="plates"></div>
 <div id="controls" hidden>
+  <button class="chip" id="settings-open" type="button">Inställningar</button>
   <button class="chip" id="view" type="button">Vy: Ovanifrån</button>
   <button class="chip" id="clock" type="button">Tid 15:00</button>
   <div id="timerow" hidden>
     <label for="hour">Tid</label>
     <input id="hour" type="range" min="0" max="24" step="0.05" value="15">
+  </div>
+</div>
+<div id="settings" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="settings-title">
+    <header>
+      <h2 id="settings-title">Inställningar</h2>
+      <button class="chip" id="settings-done" type="button">Klar</button>
+    </header>
+    <section>
+      <h3>Drone</h3>
+      <label class="switch"><input type="checkbox" id="drone-on"> Drone på</label>
+      <div class="setting"><label for="drone-level">Volym</label><input id="drone-level" type="range" min="0" max="1" step="0.01"></div>
+      <div class="setting"><label for="drone-bright">Klang</label><input id="drone-bright" type="range" min="0.15" max="0.8" step="0.01"></div>
+    </section>
+    <section>
+      <h3>Ackord, uppifrån och ner</h3>
+      <div id="chord-list" style="display:grid;gap:8px"></div>
+      <div class="row-buttons">
+        <button class="chip" id="chord-add" type="button">Lägg till ackord</button>
+        <button class="chip" id="chord-reset" type="button">Återställ G · D · A · Em</button>
+      </div>
+    </section>
   </div>
 </div>
 <div id="hint" hidden></div>
@@ -107,7 +161,7 @@ body {
     <h1>Touch Grass</h1>
     <p>Dra fingrarna över ängen. Höjden på skärmen väljer ackord, i sidled knäpper du strängarna. Låt fingret ligga kvar så sjunker det djupare i gräset och klangen ljusnar.</p>
     <button id="begin" type="button">Börja</button>
-    <span class="note">Fmaj7 · Am7 · Cmaj7 · Em7 · G, uppifrån och ner</span>
+    <span class="note" id="chordline">G · D · A · Em, uppifrån och ner</span>
   </div>
 </div>
 <div id="err" hidden></div>
@@ -120,13 +174,37 @@ body {
 "use strict";
 // ---------------------------------------------------------------------------
 // Touch Grass for phones. A port of the Godot app (touchgrass/): the meadow,
-// the five strum plates and Chordtroller's Omnichord engine, played by touch.
+// the stacked strum plates and Chordtroller's Omnichord engine, played by touch.
 // Every finger is a hand: its height picks the plate, its sideways sweep
 // plucks the strings, and the grass parts round it.
 // ---------------------------------------------------------------------------
 
-const CHORDS = [[5, 3, "Fmaj7"], [9, 4, "Am7"], [0, 3, "Cmaj7"], [4, 4, "Em7"], [7, 0, "G"]];
-const PLATE_COLORS = [[1.0, 0.78, 0.32], [1.0, 0.58, 0.45], [0.95, 0.5, 0.75], [0.62, 0.56, 1.0], [0.45, 0.75, 1.0]];
+// The plates, top to bottom, are the player's to choose (Inställningar).
+// root 0..11 (C = 0), kind: 0 major, 1 minor, 2 seventh, 3 major seventh, 4 minor seventh
+const NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
+const KINDS = [["", "dur"], ["m", "moll"], ["7", "sjua"], ["maj7", "maj7"], ["m7", "moll 7"]];
+const DEFAULT_CHORDS = [[7, 0], [2, 0], [9, 0], [4, 1]];        // G, D, A, Em
+const PALETTE = [[1.0, 0.78, 0.32], [1.0, 0.58, 0.45], [0.95, 0.5, 0.75], [0.62, 0.56, 1.0], [0.45, 0.75, 1.0], [0.55, 0.9, 0.6]];
+const MAX_PLATES = 6;
+const chordName = (r, q) => NOTE_NAMES[r] + KINDS[q][0];
+
+const settings = (() => {
+  const clamp = (x, a, b) => Math.min(b, Math.max(a, x));   // the page's clamp is defined further down
+  const s = { chords: DEFAULT_CHORDS.map((c) => c.slice()), drone: true, droneLevel: 0.35, droneBright: 0.42 };
+  try {
+    const saved = JSON.parse(localStorage.getItem("touchgrass.settings") || "null");
+    if (saved && Array.isArray(saved.chords) && saved.chords.length >= 1) {
+      s.chords = saved.chords.slice(0, MAX_PLATES).map(([r, q]) => [clamp(r | 0, 0, 11), clamp(q | 0, 0, 4)]);
+    }
+    if (saved && typeof saved.drone === "boolean") s.drone = saved.drone;
+    if (saved && Number.isFinite(saved.droneLevel)) s.droneLevel = clamp(saved.droneLevel, 0, 1);
+    if (saved && Number.isFinite(saved.droneBright)) s.droneBright = clamp(saved.droneBright, 0, 1);
+  } catch (e) { /* no storage: the defaults */ }
+  return s;
+})();
+function saveSettings() { try { localStorage.setItem("touchgrass.settings", JSON.stringify(settings)); } catch (e) {} }
+
+let CHORDS = [], PLATE_COLORS = [], plates = [];
 const STRING_LEFT = 0.04, STRING_RIGHT = 0.96, REARM = 0.33, BAND_HYST = 0.18;
 const FIELD_LIMIT = 19;          // metres from the middle the blades reach
 const BEND_SIZE = 40;            // metres the bend and ripple fields cover, centred on the origin
@@ -627,7 +705,8 @@ async function startAudio() {
   freqData = new Float32Array(analyser.frequencyBinCount);
   master.connect(analyser).connect(ctx.destination);
   if (ctx.state !== "running") await ctx.resume();
-  post({ t: "chord", root: CHORDS[2][0], quality: CHORDS[2][1] });
+  sendDrone();
+  startDroneOn(middlePlate());
 }
 
 function listenToMusic(dt) {
@@ -650,9 +729,17 @@ function listenToMusic(dt) {
 
 // ---- fingers on the plates ----------------------------------------------------
 // Each finger has its own strum state, as each hand did in the Godot app.
-const plates = CHORDS.map((c) => E.plate(c[0], c[1]));
 const fingers = new Map();
-let dronePlate = 2;
+let dronePlate = -1;
+const middlePlate = () => Math.floor((CHORDS.length - 1) / 2);
+function startDroneOn(k) {
+  dronePlate = k;
+  post({ t: "chord", root: CHORDS[k][0], quality: CHORDS[k][1] });
+}
+function sendDrone() {
+  post({ t: "drone", v: settings.drone ? settings.droneLevel : 0 });
+  post({ t: "droneBright", v: settings.droneBright });
+}
 const ripples = [];
 
 function newFinger(id) {
@@ -709,7 +796,7 @@ function onPluck(f, vel) {
   ripples.push({ x: f.world.x, z: f.world.z, age: 0, strength: vel, col });
   if (ripples.length > MAX_RIPPLE) ripples.shift();
   plateGlow[f.plate] = 1;
-  if (f.plate !== dronePlate) { dronePlate = f.plate; post({ t: "chord", root: CHORDS[f.plate][0], quality: CHORDS[f.plate][1] }); }
+  if (f.plate !== dronePlate) startDroneOn(f.plate);
 }
 
 // ---- depth: how long a finger has stayed down. A quick sweep stays light
@@ -764,18 +851,32 @@ canvas.addEventListener("pointercancel", lift);
 canvas.addEventListener("contextmenu", (e) => e.preventDefault());
 
 // ---- plate names: a faint chord name at the left edge while a finger plays there
-const plateGlow = new Float32Array(CHORDS.length);
-const plateLabels = CHORDS.map((c, k) => {
-  const el = document.createElement("div");
-  el.className = "plate-name";
-  el.textContent = c[2];
-  el.style.top = ((k + 0.5) / CHORDS.length * 100) + "%";
-  const rgb = PLATE_COLORS[k].map((v) => Math.round(lerp(v, 1, 0.5) * 255));
-  el.style.color = `rgb(${rgb.join(",")})`;
-  $("plates").appendChild(el);
-  return el;
-});
-const plateAlpha = new Float32Array(CHORDS.length);
+let plateGlow = new Float32Array(0), plateAlpha = new Float32Array(0), plateLabels = [];
+
+// Rebuild everything that follows the chord list: the notes under each plate,
+// their colours and names. Fingers already down start fresh on the new plates.
+function applyChords() {
+  CHORDS = settings.chords.map(([r, q]) => [r, q, chordName(r, q)]);
+  PLATE_COLORS = CHORDS.map((c, k) => PALETTE[k % PALETTE.length]);
+  plates = CHORDS.map((c) => E.plate(c[0], c[1]));
+  plateGlow = new Float32Array(CHORDS.length);
+  plateAlpha = new Float32Array(CHORDS.length);
+  $("plates").textContent = "";
+  plateLabels = CHORDS.map((c, k) => {
+    const el = document.createElement("div");
+    el.className = "plate-name";
+    el.textContent = c[2];
+    el.style.top = ((k + 0.5) / CHORDS.length * 100) + "%";
+    const rgb = PLATE_COLORS[k].map((v) => Math.round(lerp(v, 1, 0.5) * 255));
+    el.style.color = `rgb(${rgb.join(",")})`;
+    $("plates").appendChild(el);
+    return el;
+  });
+  for (const f of fingers.values()) { f.plate = -1; f.prev = -1; }
+  $("chordline").textContent = CHORDS.map((c) => c[2]).join(" · ") + ", uppifrån och ner";
+  if (ctx) startDroneOn(middlePlate());
+}
+applyChords();
 
 // ---- time of day ---------------------------------------------------------------
 const KEYS = [
@@ -972,9 +1073,80 @@ $("begin").addEventListener("click", async () => {
 document.addEventListener("visibilitychange", () => {
   if (!ctx) return;
   if (document.hidden) { post({ t: "alloff" }); ctx.suspend(); dronePlate = -1; }
-  else ctx.resume().then(() => { dronePlate = 2; post({ t: "chord", root: CHORDS[2][0], quality: CHORDS[2][1] }); });
+  else ctx.resume().then(() => startDroneOn(middlePlate()));
 });
 window.addEventListener("pagehide", () => { if (ctx) ctx.close(); });
+
+// ---- settings: the drone and the chords under the plates ----------------------
+function openSettings(open) {
+  $("settings").hidden = !open;
+  if (open) { renderChordList(); $("settings-done").focus(); }
+}
+
+// a soft roll over a plate, so a changed chord can be heard at once
+function previewPlate(k) {
+  if (!ctx) return;
+  plates[k].forEach((note, i) => post({ t: "pluckNote", note, vel: 0.45, delay: i * 0.035 }));
+  startDroneOn(k);
+}
+
+function renderChordList() {
+  const list = $("chord-list");
+  list.textContent = "";
+  settings.chords.forEach(([r, q], k) => {
+    const row = document.createElement("div");
+    row.className = "chord-row";
+    const dot = document.createElement("span");
+    dot.className = "dot";
+    const c = PALETTE[k % PALETTE.length].map((v) => Math.round(lerp(v, 1, 0.3) * 255));
+    dot.style.background = `rgb(${c.join(",")})`;
+    const root = document.createElement("select");
+    root.id = `chord-root-${k}`;
+    root.setAttribute("aria-label", `Grundton, ackord ${k + 1}`);
+    NOTE_NAMES.forEach((name, i) => root.add(new Option(name, i, false, i === r)));
+    const kind = document.createElement("select");
+    kind.id = `chord-kind-${k}`;
+    kind.setAttribute("aria-label", `Typ, ackord ${k + 1}`);
+    KINDS.forEach(([, name], i) => kind.add(new Option(name, i, false, i === q)));
+    const change = () => {
+      settings.chords[k] = [parseInt(root.value, 10), parseInt(kind.value, 10)];
+      saveSettings(); applyChords(); previewPlate(k);
+    };
+    root.addEventListener("change", change);
+    kind.addEventListener("change", change);
+    const remove = document.createElement("button");
+    remove.className = "chip"; remove.type = "button"; remove.textContent = "Ta bort";
+    remove.disabled = settings.chords.length <= 1;
+    remove.addEventListener("click", () => {
+      settings.chords.splice(k, 1);
+      saveSettings(); applyChords(); renderChordList();
+    });
+    row.append(dot, root, kind, remove);
+    list.appendChild(row);
+  });
+  $("chord-add").disabled = settings.chords.length >= MAX_PLATES;
+}
+
+$("settings-open").addEventListener("click", () => openSettings(true));
+$("settings-done").addEventListener("click", () => openSettings(false));
+$("settings").addEventListener("click", (e) => { if (e.target === $("settings")) openSettings(false); });
+document.addEventListener("keydown", (e) => { if (e.key === "Escape" && !$("settings").hidden) openSettings(false); });
+$("chord-add").addEventListener("click", () => {
+  if (settings.chords.length >= MAX_PLATES) return;
+  const [r, q] = settings.chords[settings.chords.length - 1];
+  settings.chords.push([(r + 7) % 12, q]);           // a fifth up from the last
+  saveSettings(); applyChords(); renderChordList(); previewPlate(settings.chords.length - 1);
+});
+$("chord-reset").addEventListener("click", () => {
+  settings.chords = DEFAULT_CHORDS.map((c) => c.slice());
+  saveSettings(); applyChords(); renderChordList();
+});
+$("drone-on").checked = settings.drone;
+$("drone-level").value = settings.droneLevel;
+$("drone-bright").value = settings.droneBright;
+$("drone-on").addEventListener("change", (e) => { settings.drone = e.target.checked; saveSettings(); sendDrone(); });
+$("drone-level").addEventListener("input", (e) => { settings.droneLevel = parseFloat(e.target.value); if (!settings.drone && settings.droneLevel > 0) { settings.drone = true; $("drone-on").checked = true; } saveSettings(); sendDrone(); });
+$("drone-bright").addEventListener("input", (e) => { settings.droneBright = parseFloat(e.target.value); saveSettings(); sendDrone(); });
 
 $("view").addEventListener("click", () => goToView(viewIndex + 1, false));
 $("clock").addEventListener("click", () => { $("timerow").hidden = !$("timerow").hidden; });
