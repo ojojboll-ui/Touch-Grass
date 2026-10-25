@@ -718,6 +718,7 @@ async function startAudio() {
   if (ctx.state !== "running") await ctx.resume();
   sendDrone();
   sendStrings();
+  post({ t: "tone", v: 1 });     // the shared filter stays open: colour is per note now
   startDroneOn(middlePlate());
 }
 
@@ -795,8 +796,10 @@ function strum(f, sx, sy, t) {
     if (moved < 0) order.reverse();
     for (const k of order) {
       if (Math.abs(k - f.prev) < 1e-6 || !f.armed[k]) continue;
-      const vel = clamp(0.3 + 0.3 * clamp(f.speed / 20, 0, 1) + 0.4 * depthFor(f), 0.15, 1);
-      post({ t: "pluckNote", note: plates[f.plate][k], vel, delay: 0 });
+      // every pluck is as loud as the next; how deep this finger is sets only
+      // this note's colour, so a soft pick on one plate never dulls another's strum
+      const vel = 0.72;
+      post({ t: "pluckNote", note: plates[f.plate][k], vel, delay: 0, bright: 0.45 + 0.55 * depthFor(f) });
       f.armed[k] = 0;
       f.lastPluck = performance.now();
       onPluck(f, vel);
@@ -815,9 +818,10 @@ function onPluck(f, vel) {
   if (f.plate !== dronePlate) startDroneOn(f.plate);
 }
 
-// ---- depth: how long a finger has stayed down. A quick sweep stays light
-// and dull at the tips; a finger left in the grass sinks over about 1.5 s,
-// pressing the blades flat and opening the sound. (Tilt was tried: claude.ai
+// ---- depth: how long a finger has stayed down. A quick sweep stays at the
+// tips and its notes sound soft-edged; a finger left in the grass sinks over
+// about 1.5 s, pressing the blades flat and opening its own notes. Depth never
+// changes the volume, and each finger colours only the notes it plays. (Tilt was tried: claude.ai
 // artifacts get no motion sensors, 2026-10-25.)
 const SINK_DELAY = 0.15, SINK_SECONDS = 1.5;
 function depthFor(f) { return f.depth; }
@@ -977,7 +981,7 @@ window.addEventListener("resize", resize);
 
 // ---- the frame ---------------------------------------------------------------------
 let started = false, last = performance.now(), clockTime = 0;
-let lastTone = -1, deepestDepth = 0;
+let deepestDepth = 0;
 let fpsTime = 0, fpsFrames = 0, tuned = 0;
 const bendTouch = bendMat.uniforms.uTouch.value, bendDrag = bendMat.uniforms.uDrag.value;
 
@@ -996,12 +1000,6 @@ function frame(now) {
     deepest = Math.max(deepest, depthFor(f));
   }
   deepestDepth = deepest;
-  // the deepest finger sets the strings' tone; with no finger down it holds, so
-  // notes still ringing do not change colour as they die
-  if (started && fingers.size) {
-    const tone = 0.1 + 0.9 * deepest;
-    if (Math.abs(tone - lastTone) > 0.01) { lastTone = tone; post({ t: "tone", v: tone }); }
-  }
 
   // stamp the fingers into the bend field
   let n = 0;

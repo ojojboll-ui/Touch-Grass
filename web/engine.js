@@ -40,18 +40,22 @@ function TouchGrassEngine() {
       this.target = 1; this.attackStep = 0.01; this.decayCoef = 0.999; this.filterG = 0.5;
       this.spec = null; this.stringIdx = -1; this.stamp = 0;
     }
-    start(freq, velocity, decayCoef, spec, stringIndex, stamp) {
+    // bright 0..1 is this note's own colour: 1 the voice as designed, lower
+    // closes its lowpass (about three octaves down at 0). Each note keeps it,
+    // so one finger playing softly never dulls another's strum.
+    start(freq, velocity, decayCoef, spec, stringIndex, stamp, bright = 1) {
       const wasActive = this.active;
       this.spec = spec;
       const spread = Math.pow(2, spec.detune / 1200);
       this.inc1 = freq / spread / this.sr;
       this.inc2 = freq * spread / this.sr;
       if (!wasActive) { this.phase1 = 0; this.phase2 = 0.37; this.lowpass = 0; }
-      this.target = clamp(velocity, 0, 1);
+      // a darker note is boosted back to the same loudness: brightness is colour, not volume
+      this.target = clamp(velocity, 0, 1) * Math.pow(2, (1 - clamp(bright, 0, 1)) * 0.95);
       this.attackStep = this.target / Math.max(1, this.sr * spec.attack);
       this.attacking = true;
       this.decayCoef = decayCoef;
-      const cutoff = clamp(freq * spec.filterMultiple, 800, 14000);
+      const cutoff = clamp(clamp(freq * spec.filterMultiple, 800, 14000) * Math.pow(2, (clamp(bright, 0, 1) - 1) * 3.2), 250, 16000);
       this.filterG = 1 - Math.exp(-2 * PI * cutoff / this.sr);
       this.stringIdx = stringIndex;
       this.stamp = stamp;
@@ -283,9 +287,9 @@ function TouchGrassEngine() {
       if (index < 0 || index >= this.strings.length) return;
       this.pluckNote(this.strings[index], velocity, delaySamples);
     }
-    pluckNote(note, velocity, delaySamples) {
+    pluckNote(note, velocity, delaySamples, bright = 1) {
       if (this.pending.length >= 128) return;
-      this.pending.push({ note, vel: clamp(velocity, 0, 1), left: Math.max(0, delaySamples | 0) });
+      this.pending.push({ note, vel: clamp(velocity, 0, 1), left: Math.max(0, delaySamples | 0), bright });
     }
     setVoice(i) { this.voiceIndex = ((i % 4) + 4) % 4; this.updateDecay(); }
     setRing(s) { this.ringSeconds = clamp(s, 0.2, 30); this.updateDecay(); }
@@ -303,10 +307,10 @@ function TouchGrassEngine() {
       this.decayCoef = Math.pow(0.001, 1 / Math.max(1, this.sr * len));
       for (const v of this.plucks) if (v.active) v.decayCoef = this.decayCoef;
     }
-    startNote(note, vel) {
+    startNote(note, vel, bright = 1) {
       if (note < 0 || note > 127) return;
       const freq = 440 * Math.pow(2, (note - 69) / 12);
-      this.allocate(note).start(freq, vel, this.decayCoef, VOICES[this.voiceIndex], note, ++this.stamp);
+      this.allocate(note).start(freq, vel, this.decayCoef, VOICES[this.voiceIndex], note, ++this.stamp, bright);
     }
     allocate(note) {
       for (const v of this.plucks) if (v.active && v.stringIdx === note) return v;
@@ -337,7 +341,7 @@ function TouchGrassEngine() {
       const p = this.pending;
       for (let k = 0; k < p.length;) {
         if (p[k].left-- > 0) { k++; continue; }
-        this.startNote(p[k].note, p[k].vel);
+        this.startNote(p[k].note, p[k].vel, p[k].bright);
         p[k] = p[p.length - 1];
         p.pop();
       }
@@ -383,7 +387,7 @@ function TouchGrassEngine() {
     // commands from the page, the same set the Godot extension takes
     command(c) {
       switch (c.t) {
-        case "pluckNote": this.pluckNote(c.note, c.vel, Math.round((c.delay || 0) * this.sr)); break;
+        case "pluckNote": this.pluckNote(c.note, c.vel, Math.round((c.delay || 0) * this.sr), c.bright == null ? 1 : c.bright); break;
         case "pluck": this.pluck(c.index, c.vel, Math.round((c.delay || 0) * this.sr)); break;
         case "chord": this.setChord(c.root, c.quality); break;
         case "tone": this.setTone(c.v); break;
