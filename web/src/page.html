@@ -112,7 +112,7 @@ body {
 .switch input { width: 20px; height: 20px; accent-color: var(--pollen); }
 .chord-row { display: grid; grid-template-columns: 12px 1fr 1fr auto; align-items: center; gap: 8px; }
 .chord-row .dot { width: 12px; height: 12px; border-radius: 50%; }
-.chord-row select {
+.pick, .chord-row select {
   font: 600 0.95rem var(--font-ui); color: var(--pollen); background: rgba(246, 231, 180, 0.08);
   border: 1px solid var(--glass-edge); border-radius: 10px; padding: 8px 6px; min-width: 0; box-sizing: border-box; width: 100%;
 }
@@ -139,6 +139,11 @@ body {
       <h2 id="settings-title">Inställningar</h2>
       <button class="chip" id="settings-done" type="button">Klar</button>
     </header>
+    <section>
+      <h3>Strängar</h3>
+      <div class="setting"><label for="voice">Ljud</label><select id="voice" class="pick"></select></div>
+      <div class="setting"><label for="ring">Klingtid</label><input id="ring" type="range" min="0.8" max="10" step="0.1"></div>
+    </section>
     <section>
       <h3>Drone</h3>
       <label class="switch"><input type="checkbox" id="drone-on"> Drone på</label>
@@ -190,12 +195,14 @@ const chordName = (r, q) => NOTE_NAMES[r] + KINDS[q][0];
 
 const settings = (() => {
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));   // the page's clamp is defined further down
-  const s = { chords: DEFAULT_CHORDS.map((c) => c.slice()), drone: true, droneLevel: 0.35, droneBright: 0.42 };
+  const s = { chords: DEFAULT_CHORDS.map((c) => c.slice()), voice: 1, ring: 3.5, drone: true, droneLevel: 0.35, droneBright: 0.42 };
   try {
     const saved = JSON.parse(localStorage.getItem("touchgrass.settings") || "null");
     if (saved && Array.isArray(saved.chords) && saved.chords.length >= 1) {
       s.chords = saved.chords.slice(0, MAX_PLATES).map(([r, q]) => [clamp(r | 0, 0, 11), clamp(q | 0, 0, 4)]);
     }
+    if (saved && Number.isInteger(saved.voice)) s.voice = clamp(saved.voice, 0, 3);
+    if (saved && Number.isFinite(saved.ring)) s.ring = clamp(saved.ring, 0.8, 10);
     if (saved && typeof saved.drone === "boolean") s.drone = saved.drone;
     if (saved && Number.isFinite(saved.droneLevel)) s.droneLevel = clamp(saved.droneLevel, 0, 1);
     if (saved && Number.isFinite(saved.droneBright)) s.droneBright = clamp(saved.droneBright, 0, 1);
@@ -706,6 +713,7 @@ async function startAudio() {
   master.connect(analyser).connect(ctx.destination);
   if (ctx.state !== "running") await ctx.resume();
   sendDrone();
+  sendStrings();
   startDroneOn(middlePlate());
 }
 
@@ -735,6 +743,10 @@ const middlePlate = () => Math.floor((CHORDS.length - 1) / 2);
 function startDroneOn(k) {
   dronePlate = k;
   post({ t: "chord", root: CHORDS[k][0], quality: CHORDS[k][1] });
+}
+function sendStrings() {
+  post({ t: "voice", v: settings.voice });
+  post({ t: "ring", v: settings.ring });
 }
 function sendDrone() {
   post({ t: "drone", v: settings.drone ? settings.droneLevel : 0 });
@@ -1141,6 +1153,15 @@ $("chord-reset").addEventListener("click", () => {
   settings.chords = DEFAULT_CHORDS.map((c) => c.slice());
   saveSettings(); applyChords(); renderChordList();
 });
+const VOICE_NAMES = ["Omni (OM-84)", "Harpa", "Vibrafon", "Gitarr"];
+VOICE_NAMES.forEach((name, i) => $("voice").add(new Option(name, i, false, i === settings.voice)));
+$("ring").value = settings.ring;
+$("voice").addEventListener("change", (e) => {
+  settings.voice = parseInt(e.target.value, 10);
+  saveSettings(); sendStrings(); previewPlate(dronePlate >= 0 ? dronePlate : middlePlate());
+});
+$("ring").addEventListener("input", (e) => { settings.ring = parseFloat(e.target.value); saveSettings(); sendStrings(); });
+$("ring").addEventListener("change", () => previewPlate(dronePlate >= 0 ? dronePlate : middlePlate()));
 $("drone-on").checked = settings.drone;
 $("drone-level").value = settings.droneLevel;
 $("drone-bright").value = settings.droneBright;
