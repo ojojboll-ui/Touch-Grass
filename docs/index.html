@@ -1,0 +1,1422 @@
+<!doctype html><html lang="sv"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><style>:root{padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}body{margin:0}[hidden]{display:none!important}</style></head><body>
+<title>Touch Grass</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Comfortaa:wght@400;600&family=Nunito+Sans:opsz,wght@6..12,400;6..12,600&display=swap">
+<style>
+/* One full-screen meadow; the few controls float over it like seed heads. */
+:root {
+  --meadow: #20351a;      /* page ground behind the canvas, the meadow's shade */
+  --dusk: #0d160b;        /* the start screen's veil */
+  --pollen: #f6e7b4;      /* light, text on the meadow */
+  --pollen-dim: rgba(246, 231, 180, 0.62);
+  --glass: rgba(14, 24, 12, 0.42);
+  --glass-edge: rgba(246, 231, 180, 0.18);
+  --font-title: "Comfortaa", "Nunito Sans", ui-rounded, system-ui, sans-serif;
+  --font-ui: "Nunito Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  color-scheme: dark;
+}
+html, body { height: 100%; }
+body {
+  background: var(--meadow);
+  color: var(--pollen);
+  font-family: var(--font-ui);
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-user-select: none; user-select: none;
+  -webkit-touch-callout: none;
+}
+#stage { position: fixed; inset: 0; }
+#stage canvas { display: block; width: 100%; height: 100%; touch-action: none; }
+
+#start {
+  position: fixed; inset: 0; z-index: 5;
+  display: grid; place-items: center;
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  background: radial-gradient(ellipse at 50% 60%, rgba(13, 22, 11, 0.35), rgba(13, 22, 11, 0.82));
+  transition: opacity 0.9s ease;
+}
+#start.gone { opacity: 0; pointer-events: none; }
+.start-card { display: grid; gap: 18px; justify-items: center; text-align: center; max-width: 30rem; }
+.start-card h1 {
+  margin: 0; font-family: var(--font-title); font-weight: 600;
+  font-size: clamp(2.4rem, 9vw, 4.2rem); letter-spacing: 0.02em; line-height: 1;
+  text-wrap: balance;
+}
+.start-card p { margin: 0; color: var(--pollen-dim); font-size: 1rem; line-height: 1.5; text-wrap: balance; }
+#begin {
+  font: 600 1.05rem var(--font-ui); color: var(--dusk);
+  background: var(--pollen); border: 0; border-radius: 999px;
+  padding: 14px 34px; cursor: pointer; letter-spacing: 0.03em;
+}
+#begin:focus-visible, .chip:focus-visible { outline: 2px solid var(--pollen); outline-offset: 3px; }
+#start .note { font-size: 0.82rem; color: var(--pollen-dim); }
+
+#controls {
+  position: fixed; z-index: 4;
+  top: calc(12px + env(safe-area-inset-top, 0px));
+  right: calc(12px + env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; align-items: flex-end; gap: 8px;
+}
+.chip {
+  font: 600 0.85rem var(--font-ui); color: var(--pollen);
+  background: var(--glass); border: 1px solid var(--glass-edge); border-radius: 999px;
+  padding: 8px 14px; cursor: pointer;
+  -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+}
+#timerow {
+  display: flex; align-items: center; gap: 10px;
+  background: var(--glass); border: 1px solid var(--glass-edge); border-radius: 999px;
+  padding: 6px 14px; -webkit-backdrop-filter: blur(6px); backdrop-filter: blur(6px);
+  font-variant-numeric: tabular-nums; font-size: 0.85rem;
+}
+#hour { width: min(46vw, 200px); accent-color: var(--pollen); }
+
+#plates { position: fixed; inset: 0; pointer-events: none; z-index: 3; }
+.plate-name {
+  position: absolute; left: calc(14px + env(safe-area-inset-left, 0px));
+  transform: translateY(-50%);
+  font-family: var(--font-title); font-size: clamp(0.95rem, 3.2vw, 1.35rem); font-weight: 600;
+  text-shadow: 0 1px 6px rgba(10, 20, 6, 0.6);
+  opacity: 0;
+}
+#hint {
+  position: fixed; z-index: 3; left: 50%; transform: translateX(-50%);
+  bottom: calc(18px + env(safe-area-inset-bottom, 0px));
+  max-width: calc(100% - 32px);
+  font-size: 0.9rem; color: var(--pollen-dim); text-align: center; text-shadow: 0 1px 6px rgba(10, 20, 6, 0.7);
+  transition: opacity 1.5s ease; pointer-events: none;
+}
+#err { position: fixed; inset: auto 16px 16px 16px; z-index: 6; color: var(--pollen); font-size: 0.9rem; }
+@media (prefers-reduced-motion: reduce) { #start, #hint { transition: none; } }
+</style>
+
+<div id="stage"></div>
+<div id="plates"></div>
+<div id="controls" hidden>
+  <button class="chip" id="view" type="button">Vy: Ovanifrån</button>
+  <button class="chip" id="clock" type="button">Tid 15:00</button>
+  <div id="timerow" hidden>
+    <label for="hour">Tid</label>
+    <input id="hour" type="range" min="0" max="24" step="0.05" value="15">
+  </div>
+</div>
+<div id="hint" hidden></div>
+<div id="start">
+  <div class="start-card">
+    <h1>Touch Grass</h1>
+    <p>Dra fingrarna över ängen. Höjden på skärmen väljer ackord, i sidled knäpper du strängarna. Flera fingrar spelar flera ackord.</p>
+    <button id="begin" type="button">Börja</button>
+    <span class="note">Fmaj7 · Am7 · Cmaj7 · Em7 · G, uppifrån och ner</span>
+  </div>
+</div>
+<div id="err" hidden></div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script>
+// Touch Grass's sound engine for the web: a line-by-line port of gdext/src
+// (GrassEngine.h and the Chordtroller headers it plays: PluckVoice,
+// VoiceSpec, the Omnichord plate from ChordRing, Ensemble, TempoDelay and a
+// JunoVoice for the drone). Keep the two in step; test/enginetest.mjs renders
+// the same score through both and compares them.
+//
+// Everything lives inside one self-contained factory so the page can run it
+// in an AudioWorklet (from a blob made of this function's own source) or, if
+// the browser refuses that, on the main thread.
+
+function TouchGrassEngine() {
+  "use strict";
+  const PI = 3.14159265358979;
+  const TAU = 2 * PI;
+
+  // ---- VoiceSpec ------------------------------------------------------------
+  const PULSE = 0, SAW = 1, SINE = 2;
+  const VOICES = [
+    { name: "OMNI",     wave: PULSE, pw: 0.35, filterMultiple: 7.0,  decayScale: 1.00, attack: 0.0020, detune: 3.0 },
+    { name: "HARPA",    wave: SAW,   pw: 0.0,  filterMultiple: 5.0,  decayScale: 1.15, attack: 0.0030, detune: 2.0 },
+    { name: "VIBRAFON", wave: SINE,  pw: 0.0,  filterMultiple: 12.0, decayScale: 1.60, attack: 0.0040, detune: 1.5 },
+    { name: "GITARR",   wave: PULSE, pw: 0.20, filterMultiple: 9.0,  decayScale: 0.70, attack: 0.0015, detune: 4.0 },
+  ];
+
+  const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+
+  function polyBlep(t, dt) {
+    if (dt <= 0) return 0;
+    if (t < dt) { t /= dt; return t + t - t * t - 1; }
+    if (t > 1 - dt) { t = (t - 1) / dt; return t * t + t + t + 1; }
+    return 0;
+  }
+
+  // ---- PluckVoice -------------------------------------------------------------
+  class PluckVoice {
+    constructor(sr) { this.sr = sr; this.reset(); }
+    reset() {
+      this.active = false; this.attacking = false; this.env = 0; this.lowpass = 0;
+      this.phase1 = 0; this.phase2 = 0.37; this.inc1 = 0; this.inc2 = 0;
+      this.target = 1; this.attackStep = 0.01; this.decayCoef = 0.999; this.filterG = 0.5;
+      this.spec = null; this.stringIdx = -1; this.stamp = 0;
+    }
+    start(freq, velocity, decayCoef, spec, stringIndex, stamp) {
+      const wasActive = this.active;
+      this.spec = spec;
+      const spread = Math.pow(2, spec.detune / 1200);
+      this.inc1 = freq / spread / this.sr;
+      this.inc2 = freq * spread / this.sr;
+      if (!wasActive) { this.phase1 = 0; this.phase2 = 0.37; this.lowpass = 0; }
+      this.target = clamp(velocity, 0, 1);
+      this.attackStep = this.target / Math.max(1, this.sr * spec.attack);
+      this.attacking = true;
+      this.decayCoef = decayCoef;
+      const cutoff = clamp(freq * spec.filterMultiple, 800, 14000);
+      this.filterG = 1 - Math.exp(-2 * PI * cutoff / this.sr);
+      this.stringIdx = stringIndex;
+      this.stamp = stamp;
+      this.active = true;
+    }
+    stopQuickly() {
+      if (!this.active) return;
+      this.attacking = false;
+      this.decayCoef = Math.pow(0.001, 1 / Math.max(1, this.sr * 0.005));
+    }
+    osc(phase, inc) {
+      const s = this.spec;
+      if (s.wave === SINE) return Math.sin(TAU * phase);
+      if (s.wave === SAW) return (2 * phase - 1) - polyBlep(phase, inc);
+      let v = phase < s.pw ? 1 : -1;
+      v += polyBlep(phase, inc);
+      let falling = phase + (1 - s.pw);
+      if (falling >= 1) falling -= 1;
+      return v - polyBlep(falling, inc);
+    }
+    process() {
+      if (this.attacking) {
+        this.env += this.attackStep;
+        if (this.env >= this.target) { this.env = this.target; this.attacking = false; }
+      } else {
+        this.env *= this.decayCoef;
+        if (this.env < 1e-4) { this.active = false; this.env = 0; return 0; }
+      }
+      const raw = (this.osc(this.phase1, this.inc1) + this.osc(this.phase2, this.inc2)) * 0.5;
+      this.phase1 += this.inc1; if (this.phase1 >= 1) this.phase1 -= 1;
+      this.phase2 += this.inc2; if (this.phase2 >= 1) this.phase2 -= 1;
+      const g = clamp(this.filterG * (0.35 + 0.65 * this.env), 0.0005, 0.99);
+      this.lowpass += g * (raw - this.lowpass);
+      return this.lowpass * this.env;
+    }
+  }
+
+  // ---- The Omnichord plate (ChordRing.h StringSet) ----------------------------
+  // quality: 0 major, 1 minor, 2 dominant 7, 3 major 7, 4 minor 7
+  const THIRD = [4, 3, 4, 4, 3];
+  const COLOUR = [7, 7, 10, 11, 10];
+
+  function plate(root, quality) {
+    const pc = ((root % 12) + 12) % 12;
+    const q = clamp(quality | 0, 0, 4);
+    const base = pc <= 5 ? 48 + pc : 36 + pc;
+    const colourOffset = (base + COLOUR[q] - 12) >= 42 ? COLOUR[q] - 12 : COLOUR[q];
+    const out = [];
+    for (let o = 0; o < 4; o++) {
+      const r = base + 12 * o;
+      out.push(r, r + THIRD[q], r + colourOffset);
+    }
+    out.push(base + 48);
+    return out;
+  }
+
+  // ---- Ensemble ---------------------------------------------------------------
+  class Ensemble {
+    constructor(sr) {
+      this.sr = sr;
+      this.buf = new Float32Array(Math.floor(sr * 0.05) + 4);
+      this.w = 0; this.phase = 0; this.rate = 0.45; this.mix = 0.5;
+      this.lpL = 0; this.lpR = 0;
+      this.lpc = 1 - Math.exp(-2 * PI * 7000 / sr);
+    }
+    tri(p) { p -= Math.floor(p); return 1 - Math.abs(2 * p - 1); }
+    tap(ms) {
+      const size = this.buf.length;
+      let pos = this.w - ms * 0.001 * this.sr;
+      while (pos < 0) pos += size;
+      const a = pos | 0, b = (a + 1) % size, f = pos - a;
+      return this.buf[a] * (1 - f) + this.buf[b] * f;
+    }
+    process(x, out) {
+      this.buf[this.w] = x;
+      this.phase += this.rate / this.sr;
+      if (this.phase >= 1) this.phase -= 1;
+      const wl = this.tap(1.2 + this.tri(this.phase) * 4.8);
+      const wr = this.tap(1.2 + this.tri(this.phase + 0.5) * 4.8);
+      this.lpL += this.lpc * (wl - this.lpL);
+      this.lpR += this.lpc * (wr - this.lpR);
+      out[0] = x * (1 - this.mix) + this.lpL * this.mix;
+      out[1] = x * (1 - this.mix) + this.lpR * this.mix;
+      if (++this.w >= this.buf.length) this.w = 0;
+    }
+  }
+
+  // ---- TempoDelay: ping-pong, dotted eighth, darker each time round ------------
+  class TempoDelay {
+    constructor(sr) {
+      this.sr = sr;
+      this.L = new Float32Array(Math.floor(sr * 2.5) + 4);
+      this.R = new Float32Array(this.L.length);
+      this.w = 0; this.lowL = 0; this.lowR = 0; this.send = 0; this.fb = 0.3;
+      this.target = 11025; this.current = 11025;
+    }
+    setTiming(bpm, division) {
+      const beats = [0.5, 0.75, 1.0][clamp(division, 0, 2)];
+      const sec = 60 / Math.max(40, bpm) * beats;
+      this.target = Math.min(sec * this.sr, this.L.length - 4);
+    }
+    setAmount(send, fb) { this.send = clamp(send, 0, 1); this.fb = clamp(fb, 0, 0.85); }
+    read(line, d) {
+      let pos = this.w - d;
+      while (pos < 0) pos += line.length;
+      const a = pos | 0, b = (a + 1) % line.length, f = pos - a;
+      return line[a] * (1 - f) + line[b] * f;
+    }
+    process(io) {
+      this.current += (this.target - this.current) * 0.0005;
+      const wl = this.read(this.L, this.current), wr = this.read(this.R, this.current);
+      this.lowL += 0.35 * (wl - this.lowL);
+      this.lowR += 0.35 * (wr - this.lowR);
+      const input = (io[0] + io[1]) * 0.5 * this.send;
+      this.L[this.w] = input + this.lowR * this.fb;
+      this.R[this.w] = this.lowL * this.fb;
+      if (++this.w >= this.L.length) this.w = 0;
+      io[0] += wl; io[1] += wr;
+    }
+  }
+
+  // ---- JunoVoice (PAD patch) for the drone ------------------------------------
+  const PAD = { saw: 0.80, pulse: 0.45, sub: 0.30, noise: 0.0, pw: 0.50, pwm: 0.35, lfoRate: 0.45,
+                env: 0.22, key: 0.30, hpf: 0.05, A: 0.55, D: 1.20, S: 0.80, R: 1.40, level: 0.55 };
+  const IDLE = 0, ATTACK = 1, DECAY = 2, SUSTAIN = 3, RELEASE = 4;
+
+  function softClip(x) { x = clamp(x, -3, 3); return x * (27 + x * x) / (27 + 9 * x * x); }
+
+  class JunoVoice {
+    constructor(sr) {
+      this.sr = sr; this.p = PAD;
+      const coef = (s) => Math.pow(0.001, 1 / Math.max(1, sr * s));
+      this.attackStep = 1 / Math.max(1, sr * PAD.A);
+      this.decayCoef = coef(PAD.D); this.releaseCoef = coef(PAD.R);
+      this.hpfCoef = 1 - Math.exp(-2 * PI * (20 * Math.pow(2, PAD.hpf * 5.3)) / sr);
+      this.active = false; this.gateOn = false; this.env = 0; this.stage = IDLE;
+      this.s1 = this.s2 = this.s3 = this.s4 = 0; this.hpLow = 0;
+      this.phase = 0; this.subPhase = 0; this.inc = 0; this.note = -1; this.vel = 1; this.stamp = 0;
+      this.G = 0.5; this.g = 1; this.tick = 0;   // filter coefficients, refreshed every 16 samples
+    }
+    noteOn(note, vel, order) {
+      if (!this.active) { this.phase = 0; this.subPhase = 0; }
+      this.note = note; this.vel = vel;
+      this.inc = 440 * Math.pow(2, (note - 69) / 12) / this.sr;
+      this.stage = ATTACK; this.active = true; this.gateOn = true; this.stamp = order;
+    }
+    noteOff() { if (!this.gateOn) return; this.gateOn = false; this.stage = RELEASE; }
+    advance() {
+      const p = this.p;
+      switch (this.stage) {
+        case ATTACK: this.env += this.attackStep; if (this.env >= 1) { this.env = 1; this.stage = DECAY; } break;
+        case DECAY: this.env = p.S + (this.env - p.S) * this.decayCoef; if (Math.abs(this.env - p.S) < 1e-3) this.stage = SUSTAIN; break;
+        case SUSTAIN: this.env = p.S; if (this.env <= 1e-4) { this.active = false; this.stage = IDLE; } break;
+        case RELEASE: this.env *= this.releaseCoef; if (this.env < 1e-4) { this.env = 0; this.active = false; this.stage = IDLE; } break;
+      }
+    }
+    process(lfo, cutoff, resonance, envScale) {
+      this.advance();
+      if (!this.active) return 0;
+      const p = this.p, dt = this.inc;
+      const width = clamp(p.pw + lfo * p.pwm * 0.4, 0.05, 0.95);
+      const saw = (2 * this.phase - 1) - polyBlep(this.phase, dt);
+      let pulse = this.phase < width ? 1 : -1;
+      pulse += polyBlep(this.phase, dt);
+      let f = this.phase + 1 - width; if (f >= 1) f -= 1;
+      pulse -= polyBlep(f, dt);
+      let sub = this.subPhase < 0.5 ? 1 : -1;
+      sub += polyBlep(this.subPhase, dt * 0.5);
+      let s2 = this.subPhase + 0.5; if (s2 >= 1) s2 -= 1;
+      sub -= polyBlep(s2, dt * 0.5);
+      const mixTotal = Math.max(1, p.saw + p.pulse + p.sub + p.noise);
+      let x = (saw * p.saw + pulse * p.pulse + sub * p.sub) / mixTotal;
+      this.phase += dt; if (this.phase >= 1) this.phase -= 1;
+      this.subPhase += dt * 0.5; if (this.subPhase >= 1) this.subPhase -= 1;
+      this.hpLow += this.hpfCoef * (x - this.hpLow);
+      x -= this.hpLow;
+      const position = clamp(cutoff + p.env * this.env * envScale + p.key * (this.note - 60) / 120, 0, 1);
+      // the pad's cutoff moves slowly (its envelope is seconds long), so the
+      // tan and pow are only worked out every 16 samples: on a phone they were
+      // most of the cost
+      if ((this.tick++ & 15) === 0) {
+        const hz = Math.min(20 * Math.pow(2, position * 10), 0.45 * this.sr);
+        this.g = Math.tan(PI * hz / this.sr);
+        this.G = this.g / (1 + this.g);
+      }
+      const g = this.g, G = this.G;
+      const k = clamp(resonance, 0, 1) * 3.85;
+      const S = (G * G * G * this.s1 + G * G * this.s2 + G * this.s3 + this.s4) / (1 + g);
+      const u = softClip((x - k * S) / (1 + k * G * G * G * G));
+      let v = (u - this.s1) * G; const y1 = v + this.s1; this.s1 = y1 + v;
+      v = (y1 - this.s2) * G; const y2 = v + this.s2; this.s2 = y2 + v;
+      v = (y2 - this.s3) * G; const y3 = v + this.s3; this.s3 = y3 + v;
+      v = (y3 - this.s4) * G; const y4 = v + this.s4; this.s4 = y4 + v;
+      return y4 * (1 + k * 0.5) * this.env * this.vel * p.level;
+    }
+  }
+
+  // ---- GrassEngine --------------------------------------------------------------
+  const STRING_GAIN = 0.38, DRONE_GAIN = 1.1;
+
+  class GrassEngine {
+    constructor(sr, pluckVoices = 48) {
+      this.sr = sr;
+      this.plucks = Array.from({ length: pluckVoices }, () => new PluckVoice(sr));
+      this.drone = Array.from({ length: 8 }, () => new JunoVoice(sr));
+      this.ensemble = new Ensemble(sr);
+      this.delay = new TempoDelay(sr);
+      this.delay.setTiming(72, 1);
+      this.delay.setAmount(0.22, 0.38);
+      this.pending = [];
+      this.voiceIndex = 1; this.ringSeconds = 3.5; this.decayCoef = 0.9999;
+      this.stamp = 0; this.droneStamp = 0;
+      this.droneTarget = 0.35; this.droneLevel = 0; this.droneCutoff = 0.42; this.anyDrone = false; this.lfoPhase = 0;
+      this.masterTarget = 0.8; this.master = 0.8;
+      this.toneTarget = 0.75; this.tone = 0.75; this.toneState = 0;
+      this.toneTick = 0; this.toneG = 0.5;
+      this.chord = null; this.strings = plate(0, 0);
+      this.frame = [0, 0];
+      this.updateDecay();
+    }
+    setChord(root, quality) {
+      const key = (((root % 12) + 12) % 12) * 8 + (quality | 0);
+      const changed = this.chord !== key;
+      this.chord = key;
+      this.strings = plate(root, quality);
+      if (changed) this.restrikeDrone(root, quality);
+    }
+    pluck(index, velocity, delaySamples) {
+      if (index < 0 || index >= this.strings.length) return;
+      this.pluckNote(this.strings[index], velocity, delaySamples);
+    }
+    pluckNote(note, velocity, delaySamples) {
+      if (this.pending.length >= 128) return;
+      this.pending.push({ note, vel: clamp(velocity, 0, 1), left: Math.max(0, delaySamples | 0) });
+    }
+    setVoice(i) { this.voiceIndex = ((i % 4) + 4) % 4; this.updateDecay(); }
+    setRing(s) { this.ringSeconds = clamp(s, 0.2, 30); this.updateDecay(); }
+    setDroneLevel(v) { this.droneTarget = clamp(v, 0, 1); }
+    setDroneBrightness(v) { this.droneCutoff = clamp(v, 0, 1); }
+    setDelay(send, fb, bpm) { this.delay.setAmount(send, fb); this.delay.setTiming(bpm, 1); }
+    setEnsembleMix(m) { this.ensemble.mix = clamp(m, 0, 1); }
+    setMaster(g) { this.masterTarget = clamp(g, 0, 2); }
+    setTone(t) { this.toneTarget = clamp(t, 0, 1); }
+    allOff() { this.pending.length = 0; for (const v of this.plucks) v.stopQuickly(); for (const v of this.drone) v.noteOff(); }
+    activePlucks() { let n = 0; for (const v of this.plucks) if (v.active) n++; return n; }
+
+    updateDecay() {
+      const len = this.ringSeconds * VOICES[this.voiceIndex].decayScale;
+      this.decayCoef = Math.pow(0.001, 1 / Math.max(1, this.sr * len));
+      for (const v of this.plucks) if (v.active) v.decayCoef = this.decayCoef;
+    }
+    startNote(note, vel) {
+      if (note < 0 || note > 127) return;
+      const freq = 440 * Math.pow(2, (note - 69) / 12);
+      this.allocate(note).start(freq, vel, this.decayCoef, VOICES[this.voiceIndex], note, ++this.stamp);
+    }
+    allocate(note) {
+      for (const v of this.plucks) if (v.active && v.stringIdx === note) return v;
+      for (const v of this.plucks) if (!v.active) return v;
+      let oldest = this.plucks[0];
+      for (const v of this.plucks) if (v.stamp < oldest.stamp) oldest = v;
+      return oldest;
+    }
+    restrikeDrone(root, quality) {
+      for (const v of this.drone) v.noteOff();
+      const pc = ((root % 12) + 12) % 12, q = clamp(quality | 0, 0, 4);
+      const base = pc <= 5 ? 48 + pc : 36 + pc;
+      const notes = [base, base + COLOUR[q], base + 12 + THIRD[q], base + 12];
+      const vel = [0.75, 0.6, 0.55, 0.45];
+      for (let k = 0; k < 4; k++) this.freeDrone().noteOn(notes[k], vel[k], ++this.droneStamp);
+      this.anyDrone = true;
+    }
+    freeDrone() {
+      for (const v of this.drone) if (!v.active) return v;
+      let o = null;
+      for (const v of this.drone) if (!v.gateOn && (o === null || v.stamp < o.stamp)) o = v;
+      if (o) return o;
+      o = this.drone[0];
+      for (const v of this.drone) if (v.stamp < o.stamp) o = v;
+      return o;
+    }
+    firePending() {
+      const p = this.pending;
+      for (let k = 0; k < p.length;) {
+        if (p[k].left-- > 0) { k++; continue; }
+        this.startNote(p[k].note, p[k].vel);
+        p[k] = p[p.length - 1];
+        p.pop();
+      }
+    }
+    render(L, R, n, offset = 0) {
+      const fr = this.frame;
+      for (let i = 0; i < n; i++) {
+        if (this.pending.length) this.firePending();
+        let strings = 0;
+        for (const v of this.plucks) if (v.active) strings += v.process();
+
+        this.tone += (this.toneTarget - this.tone) * 0.002;
+        if ((this.toneTick++ & 15) === 0) {
+          const fc = Math.min(900 * Math.pow(2, this.tone * 4.2), 0.45 * this.sr);
+          const g = Math.tan(3.14159265 * fc / this.sr);
+          this.toneG = g / (1 + g);
+        }
+        const v = (strings - this.toneState) * this.toneG;
+        const lp = v + this.toneState;
+        this.toneState = lp + v;
+        strings = lp;
+
+        this.droneLevel += (this.droneTarget - this.droneLevel) * 0.0005;
+        this.master += (this.masterTarget - this.master) * 0.001;
+
+        let pad = 0;
+        if (this.droneLevel > 1e-4 || this.anyDrone) {
+          this.lfoPhase += PAD.lfoRate / this.sr;
+          if (this.lfoPhase >= 1) this.lfoPhase -= 1;
+          const lfo = Math.sin(2 * 3.14159265358979 * this.lfoPhase);
+          this.anyDrone = false;
+          for (const d of this.drone) {
+            if (d.active) { this.anyDrone = true; pad += d.process(lfo, this.droneCutoff, 0.12, 1); }
+          }
+        }
+        const mono = strings * STRING_GAIN + pad * this.droneLevel * DRONE_GAIN;
+        this.ensemble.process(mono, fr);
+        this.delay.process(fr);
+        L[offset + i] = softClip(fr[0] * this.master);
+        R[offset + i] = softClip(fr[1] * this.master);
+      }
+    }
+    // commands from the page, the same set the Godot extension takes
+    command(c) {
+      switch (c.t) {
+        case "pluckNote": this.pluckNote(c.note, c.vel, Math.round((c.delay || 0) * this.sr)); break;
+        case "pluck": this.pluck(c.index, c.vel, Math.round((c.delay || 0) * this.sr)); break;
+        case "chord": this.setChord(c.root, c.quality); break;
+        case "tone": this.setTone(c.v); break;
+        case "drone": this.setDroneLevel(c.v); break;
+        case "master": this.setMaster(c.v); break;
+        case "voice": this.setVoice(c.v); break;
+        case "ring": this.setRing(c.v); break;
+        case "alloff": this.allOff(); break;
+      }
+    }
+  }
+
+  return { GrassEngine, plate, VOICES };
+}
+
+// The AudioWorklet side: a processor that owns one engine and takes commands
+// over its port. Turned into a blob by the page together with the factory.
+function TouchGrassProcessor(E) {
+  class P extends AudioWorkletProcessor {
+    constructor(options) {
+      super();
+      const voices = (options && options.processorOptions && options.processorOptions.voices) || 48;
+      this.engine = new E.GrassEngine(sampleRate, voices);
+      this.port.onmessage = (e) => {
+        const m = e.data;
+        if (Array.isArray(m)) for (const c of m) this.engine.command(c);
+        else this.engine.command(m);
+      };
+    }
+    process(inputs, outputs) {
+      const out = outputs[0];
+      const L = out[0], R = out[1] || out[0];
+      this.engine.render(L, R, L.length);
+      return true;
+    }
+  }
+  registerProcessor("grass-engine", P);
+}
+
+
+</script>
+<script>
+"use strict";
+// ---------------------------------------------------------------------------
+// Touch Grass for phones. A port of the Godot app (touchgrass/): the meadow,
+// the five strum plates and Chordtroller's Omnichord engine, played by touch.
+// Every finger is a hand: its height picks the plate, its sideways sweep
+// plucks the strings, and the grass parts round it.
+// ---------------------------------------------------------------------------
+
+const CHORDS = [[5, 3, "Fmaj7"], [9, 4, "Am7"], [0, 3, "Cmaj7"], [4, 4, "Em7"], [7, 0, "G"]];
+const PLATE_COLORS = [[1.0, 0.78, 0.32], [1.0, 0.58, 0.45], [0.95, 0.5, 0.75], [0.62, 0.56, 1.0], [0.45, 0.75, 1.0]];
+const STRING_LEFT = 0.04, STRING_RIGHT = 0.96, REARM = 0.33, BAND_HYST = 0.18;
+const FIELD_LIMIT = 19;          // metres from the middle the blades reach
+const BEND_SIZE = 40;            // metres the bend and ripple fields cover, centred on the origin
+const GRASS_TOP = 0.55;          // where a finger meets the grass
+
+const VIEWS = [
+  { name: "Ovanifrån",       pos: [0.4, 12.0, 2.4], look: [0, 0, -0.2], fov: 50 },
+  { name: "Snett ovanifrån", pos: [2.6, 9.4, 5.6],  look: [-0.3, 0, -0.6], fov: 52 },
+  { name: "Diagonalt",       pos: [6.2, 8.8, 6.2],  look: [-0.8, 0, -0.8], fov: 52 },
+];
+
+const E = TouchGrassEngine();
+const $ = (id) => document.getElementById(id);
+const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
+const lerp = (a, b, t) => a + (b - a) * t;
+const smooth = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+
+function showError(text) { const e = $("err"); e.textContent = text; e.hidden = false; }
+
+// ---- renderer ----------------------------------------------------------------
+let renderer;
+try {
+  renderer = new THREE.WebGLRenderer({ antialias: false, powerPreference: "high-performance" });
+} catch (e) {
+  showError("Den här webbläsaren kan inte visa WebGL, så ängen kan inte ritas.");
+  throw e;
+}
+const DPR = Math.min(window.devicePixelRatio || 1, 2);
+let pixelRatio = Math.min(DPR, 1.6);
+renderer.setPixelRatio(pixelRatio);
+$("stage").appendChild(renderer.domElement);
+const gl = renderer.getContext();
+const floatTargets = !!(renderer.capabilities.isWebGL2 &&
+  (gl.getExtension("EXT_color_buffer_float") || gl.getExtension("EXT_color_buffer_half_float")));
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 400);
+
+// ---- noise texture: world-space colour patches and the wind's gusts ----------
+// r dry patches, g lushness, b fine variation, a gusts. Periodic, so it tiles
+// every 64 m without a seam.
+function noiseTexture(size) {
+  function lattice(period, seed) {
+    const v = new Float32Array(period * period);
+    let s = seed >>> 0;
+    for (let i = 0; i < v.length; i++) { s = (s * 1664525 + 1013904223) >>> 0; v[i] = s / 4294967296; }
+    return (x, y) => {
+      const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi;
+      const u = fx * fx * (3 - 2 * fx), w = fy * fy * (3 - 2 * fy);
+      const at = (i, j) => v[((j % period + period) % period) * period + ((i % period + period) % period)];
+      return lerp(lerp(at(xi, yi), at(xi + 1, yi), u), lerp(at(xi, yi + 1), at(xi + 1, yi + 1), u), w);
+    };
+  }
+  function fbm(base, octaves, seed) {
+    const layers = [];
+    for (let o = 0; o < octaves; o++) layers.push(lattice(base << o, seed + o * 977));
+    return (x, y) => {
+      let s = 0, a = 0.5, n = 0;
+      for (let o = 0; o < octaves; o++) { s += a * layers[o](x * (base << o), y * (base << o)); n += a; a *= 0.5; }
+      return s / n;
+    };
+  }
+  const dry = fbm(2, 3, 11), lush = fbm(4, 3, 23), fine = fbm(16, 2, 37), gust = fbm(4, 3, 51);
+  const data = new Uint8Array(size * size * 4);
+  for (let j = 0; j < size; j++) for (let i = 0; i < size; i++) {
+    const x = i / size, y = j / size, k = (j * size + i) * 4;
+    data[k] = dry(x, y) * 255; data[k + 1] = lush(x, y) * 255;
+    data[k + 2] = fine(x, y) * 255; data[k + 3] = gust(x, y) * 255;
+  }
+  const t = new THREE.DataTexture(data, size, size, THREE.RGBAFormat);
+  t.wrapS = t.wrapT = THREE.RepeatWrapping;
+  t.magFilter = THREE.LinearFilter; t.minFilter = THREE.LinearFilter;
+  t.needsUpdate = true;
+  return t;
+}
+const noiseTex = noiseTexture(256);
+
+// ---- full-screen passes for the bend and ripple fields -----------------------
+const passScene = new THREE.Scene();
+const passCam = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+const passQuad = new THREE.Mesh(new THREE.PlaneGeometry(2, 2));
+passScene.add(passQuad);
+const PASS_VERT = "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 0.0, 1.0); }";
+
+function target(size) {
+  return new THREE.WebGLRenderTarget(size, size, {
+    type: floatTargets ? THREE.HalfFloatType : THREE.UnsignedByteType,
+    format: THREE.RGBAFormat, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter,
+    depthBuffer: false, stencilBuffer: false,
+  });
+}
+
+// Where the grass has been touched. Never cleared: each frame every texel is
+// pulled back toward rest (at least one 8-bit step, so it cannot stall where
+// half floats are missing), then the fingers are stamped on top. So the
+// blades part round a finger and the wake behind it closes over seconds.
+const MAX_TOUCH = 10;
+let bendA = target(384), bendB = target(384);
+const bendMat = new THREE.ShaderMaterial({
+  vertexShader: PASS_VERT,
+  uniforms: {
+    uPrev: { value: null }, uDecay: { value: 0.02 }, uCount: { value: 0 },
+    uTouch: { value: Array.from({ length: MAX_TOUCH }, () => new THREE.Vector4()) },
+    uDrag: { value: Array.from({ length: MAX_TOUCH }, () => new THREE.Vector4()) },
+    uRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
+    uInit: { value: 1 },
+  },
+  fragmentShader: `
+    uniform sampler2D uPrev; uniform float uDecay; uniform int uCount; uniform float uInit;
+    uniform vec4 uTouch[${MAX_TOUCH}]; uniform vec4 uDrag[${MAX_TOUCH}]; uniform vec3 uRect;
+    varying vec2 vUv;
+    void main() {
+      vec3 rest = vec3(0.5, 0.5, 0.0);
+      vec3 c = mix(texture2D(uPrev, vUv).rgb, rest, uInit);
+      vec3 d = c - rest;
+      vec3 back = d * uDecay;
+      vec3 minStep = sign(d) * min(abs(d), vec3(1.2 / 255.0));
+      c -= mix(minStep, back, step(abs(minStep), abs(back)));
+      vec2 w = uRect.xy + vUv * uRect.z;
+      for (int i = 0; i < ${MAX_TOUCH}; i++) {
+        if (i >= uCount) break;
+        vec2 o = w - uTouch[i].xy;
+        float dist = length(o);
+        float r = dist / uTouch[i].z;
+        float fall = 1.0 - smoothstep(0.0, 1.0, r);
+        if (fall <= 0.0) continue;
+        vec2 radial = dist > 1e-3 ? o / dist : vec2(0.0);
+        vec2 push = clamp(radial * smoothstep(0.0, 0.4, r) * 0.75 + uDrag[i].xy * 0.7, -1.0, 1.0);
+        vec3 stamp = vec3(0.5 + 0.5 * push, uTouch[i].w * fall);
+        c = mix(c, stamp, fall * uDrag[i].z);
+      }
+      gl_FragColor = vec4(c, 1.0);
+    }`,
+});
+
+// Rings from plucked strings, drawn fresh each frame: rgb their light,
+// a how hard they bow the blades as they pass.
+const MAX_RIPPLE = 16;
+const rippleRT = target(256);
+const rippleMat = new THREE.ShaderMaterial({
+  vertexShader: PASS_VERT,
+  uniforms: {
+    uRings: { value: Array.from({ length: MAX_RIPPLE }, () => new THREE.Vector4()) },
+    uColors: { value: Array.from({ length: MAX_RIPPLE }, () => new THREE.Vector3()) },
+    uRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
+  },
+  fragmentShader: `
+    uniform vec4 uRings[${MAX_RIPPLE}]; uniform vec3 uColors[${MAX_RIPPLE}]; uniform vec3 uRect;
+    varying vec2 vUv;
+    void main() {
+      vec2 w = uRect.xy + vUv * uRect.z;
+      vec3 glow = vec3(0.0); float bow = 0.0;
+      for (int i = 0; i < ${MAX_RIPPLE}; i++) {
+        vec4 r = uRings[i];
+        if (r.w <= 0.0) continue;
+        float ring = (length(w - r.xy) - r.z * 3.2) / 0.6;
+        float wave = exp(-ring * ring) * r.w * exp(-r.z / 1.8);
+        glow += uColors[i] * wave; bow += wave;
+      }
+      glow = glow / (1.0 + length(glow));
+      gl_FragColor = vec4(glow, clamp(bow, 0.0, 1.0));
+    }`,
+});
+
+// ---- the meadow --------------------------------------------------------------
+const COMMON_GLSL = `
+  uniform sampler2D uNoise;
+  float dryAt(vec2 xz) { return smoothstep(0.42, 0.66, texture2D(uNoise, xz / 64.0).r); }
+  float lushAt(vec2 xz) { return texture2D(uNoise, xz / 64.0 + vec2(0.37, 0.11)).g; }
+  vec3 grassLow(vec2 xz) { return mix(vec3(0.018, 0.05, 0.010), vec3(0.11, 0.09, 0.03), dryAt(xz)); }
+  vec3 grassHigh(vec2 xz) {
+    vec3 green = mix(vec3(0.20, 0.36, 0.03), vec3(0.36, 0.48, 0.045), lushAt(xz));
+    return mix(green, vec3(0.56, 0.44, 0.11), dryAt(xz));
+  }
+  vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+`;
+
+const lightUniforms = {
+  uSunDir: { value: new THREE.Vector3(0.3, 0.8, -0.5).normalize() },
+  uSunCol: { value: new THREE.Color(1, 0.9, 0.75) },
+  uAmbient: { value: new THREE.Color(0.45, 0.52, 0.6) },
+  uFogCol: { value: new THREE.Color(0.6, 0.7, 0.75) },
+  uFogDensity: { value: 0.012 },
+  uWarm: { value: 0.3 },
+};
+
+const grassUniforms = Object.assign({
+  uNoise: { value: noiseTex },
+  uBend: { value: bendA.texture },
+  uRipple: { value: rippleRT.texture },
+  uRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
+  uSpacing: { value: 0.08 }, uWidthScale: { value: 1 }, uFieldMin: { value: new THREE.Vector2() },
+  uTime: { value: 0 }, uWindDir: { value: new THREE.Vector2(0.8, -0.6).normalize() },
+  uWind: { value: 0.45 }, uGustSpeed: { value: 5.0 },
+  uMusic: { value: new THREE.Vector3() },
+}, lightUniforms);
+
+const grassMat = new THREE.ShaderMaterial({
+  uniforms: grassUniforms,
+  side: THREE.DoubleSide,
+  vertexShader: `
+    attribute vec2 aCell;
+    uniform sampler2D uBend; uniform sampler2D uRipple; uniform vec3 uRect;
+    uniform float uSpacing, uWidthScale, uTime, uWind, uGustSpeed;
+    uniform vec2 uFieldMin, uWindDir; uniform vec3 uMusic;
+    varying float vT; varying float vGust; varying vec3 vLow; varying vec3 vHigh;
+    varying vec3 vGlow; varying vec3 vN; varying vec3 vWorld; varying float vSparkle;
+    ${COMMON_GLSL}
+    vec4 hash42(vec2 p) {
+      vec4 p4 = fract(vec4(p.xyxy) * vec4(0.1031, 0.1030, 0.0973, 0.1099));
+      p4 += dot(p4, p4.wzxy + 33.33);
+      return fract((p4.xxyz + p4.yzzw) * p4.zywx);
+    }
+    void main() {
+      vec4 h = hash42(aCell + 17.0);
+      vec4 h2 = hash42(aCell * 1.618 + 3.0);
+      vec2 root = uFieldMin + (aCell + h.xy) * uSpacing;
+      float lush = lushAt(root);
+      float L = mix(0.42, 1.0, lush) * (0.7 + 0.6 * h.z);
+      float yaw = h.w * 6.2831853;
+      vec2 face = vec2(cos(yaw), sin(yaw));
+      float yaw2 = h2.x * 6.2831853;
+      vec2 droop = vec2(cos(yaw2), sin(yaw2)) * mix(0.12, 0.6, h.z * h.z);
+
+      vec2 wd = uWindDir, wp = vec2(-wd.y, wd.x);
+      vec2 q = root - wd * uTime * uGustSpeed;
+      float n = texture2D(uNoise, q / 100.0).a * 0.65 + texture2D(uNoise, q / 32.0 + vec2(0.3, 0.7)).a * 0.35;
+      float g = clamp(smoothstep(0.45, 0.78, n) + uMusic.x * 0.5, 0.0, 1.0);
+      float ph = h2.y * 6.2831853;
+      float flutter = sin(uTime * (2.2 + h.z * 1.6) + ph + dot(root, wd) * 1.3);
+      float flutter2 = sin(uTime * (3.1 + h.z) + ph * 1.7);
+      vec2 v = droop + wd * uWind * (0.25 + 1.25 * g) + wd * flutter * 0.07 * (0.4 + g) + wp * flutter2 * 0.05;
+
+      vec2 buv = (root - uRect.xy) / uRect.z;
+      float inside = step(0.0, buv.x) * step(buv.x, 1.0) * step(0.0, buv.y) * step(buv.y, 1.0);
+      vec4 b = texture2D(uBend, buv);
+      vec2 push = (b.rg - 0.5) * 2.0 * inside;
+      float press = clamp(b.b, 0.0, 1.0) * inside;
+      vec4 rp = texture2D(uRipple, buv) * inside;
+      v = v * (1.0 - 0.6 * min(length(push), 1.0)) + push * 1.5;
+      float vl = max(length(v), 1e-4);
+      float a = min(vl + press * 0.9 + rp.a * 0.7, 1.5);
+      vec2 dir = v / vl;
+
+      float t = position.y, s = position.x;
+      vec3 hd = vec3(dir.x, 0.0, dir.y);
+      vec3 P1 = hd * sin(a) * L * 0.18 + vec3(0.0, L * 0.55, 0.0);
+      vec3 P2 = hd * sin(a) * L + vec3(0.0, cos(a) * L, 0.0);
+      vec3 pos = 2.0 * (1.0 - t) * t * P1 + t * t * P2;
+      vec3 tng = normalize(2.0 * (1.0 - t) * P1 + 2.0 * t * (P2 - P1) + vec3(0.0, 1e-4, 0.0));
+      vec3 side = vec3(face.x, 0.0, face.y);
+      float w = uSpacing * 0.75 * uWidthScale * (0.75 + 0.5 * h2.z);
+      pos += side * s * w * pow(1.0 - t, 0.6);
+      vN = normalize(mix(normalize(cross(side, tng)), vec3(0.0, 1.0, 0.0), 0.6));
+      vec3 world = vec3(root.x, -0.02, root.y) + pos;
+      vWorld = world;
+      vT = t; vGust = g;
+      vLow = grassLow(root);
+      vHigh = grassHigh(root) * (0.85 + 0.3 * h2.w);
+      vGlow = rp.rgb;
+      vSparkle = uMusic.z * step(0.93, fract(h.z * 37.0 + uTime * 0.7));
+      gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
+    }`,
+  fragmentShader: `
+    uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity, uWarm;
+    varying float vT; varying float vGust; varying vec3 vLow; varying vec3 vHigh;
+    varying vec3 vGlow; varying vec3 vN; varying vec3 vWorld; varying float vSparkle;
+    vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+    void main() {
+      vec3 col = mix(vLow, vHigh, smoothstep(0.0, 0.85, vT));
+      col *= mix(0.35, 1.0, smoothstep(0.0, 0.55, vT));
+      col *= 1.0 + vGust * 0.28 * vT;
+      col = mix(col, col * vec3(1.15, 1.0, 0.7), uWarm * vT);
+      vec3 n = normalize(gl_FrontFacing ? vN : vN);
+      float lam = max(dot(n, uSunDir), 0.0) * 0.6 + 0.4;
+      vec3 lit = col * (uAmbient + uSunCol * lam * 1.4) + col * uSunCol * 0.3 * vT;
+      lit += vGlow * vT * vT * 0.55 + vec3(1.0, 0.95, 0.8) * vSparkle * vT * vT * 0.8;
+      float fog = 1.0 - exp(-uFogDensity * length(vWorld - cameraPosition));
+      lit = mix(lit, uFogCol, fog);
+      gl_FragColor = vec4(pow(tonemap(lit), vec3(1.0 / 2.2)), 1.0);
+    }`,
+});
+
+const groundMat = new THREE.ShaderMaterial({
+  uniforms: Object.assign({ uNoise: { value: noiseTex }, uFieldMin: grassUniforms.uFieldMin, uFieldMax: { value: new THREE.Vector2() } }, lightUniforms),
+  vertexShader: "varying vec3 vWorld; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }",
+  fragmentShader: `
+    uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity; uniform vec2 uFieldMin, uFieldMax;
+    varying vec3 vWorld;
+    ${COMMON_GLSL}
+    void main() {
+      vec2 xz = vWorld.xz;
+      float n = texture2D(uNoise, xz / 9.0).b;
+      vec3 low = grassLow(xz) * (0.8 + 0.4 * n);
+      // past the blades the ground takes the colour of their tips
+      vec2 outside = max(uFieldMin - xz, xz - uFieldMax);
+      float far = smoothstep(-1.0, 3.0, max(outside.x, outside.y));
+      vec3 c = mix(low, grassHigh(xz) * 0.6, far);
+      vec3 lit = c * (uAmbient + uSunCol * (max(uSunDir.y, 0.0) * 0.6 + 0.4) * 1.6);
+      float fog = 1.0 - exp(-uFogDensity * length(vWorld - cameraPosition));
+      gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
+    }`,
+});
+const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), groundMat);
+ground.rotation.x = -Math.PI / 2;
+scene.add(ground);
+
+// One blade: a strip from root (y 0) to tip (y 1), x -0.5..0.5 across.
+function bladeGeometry(segments) {
+  const pos = [], idx = [];
+  for (let k = 0; k < segments; k++) { const t = k / segments; pos.push(-0.5, t, 0, 0.5, t, 0); }
+  pos.push(0, 1, 0);
+  for (let k = 0; k < segments - 1; k++) { const a = k * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+  const last = (segments - 1) * 2;
+  idx.push(last, segments * 2, last + 1);
+  const g = new THREE.InstancedBufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+  g.setIndex(idx);
+  return g;
+}
+
+// The field: a grid of cells covering what every view sees, in a shuffled
+// order, so drawing fewer blades thins the whole meadow evenly. Blades widen
+// as they thin so the meadow stays full.
+const MAX_BLADES = 150000;
+let budget = 70000;
+const bladeGeo = bladeGeometry(4);
+const blades = new THREE.Mesh(bladeGeo, grassMat);
+blades.frustumCulled = false;
+scene.add(blades);
+let fieldArea = 1;
+
+function footprint(view, aspect) {
+  const cam = new THREE.PerspectiveCamera(view.fov, aspect, 0.1, 100);
+  cam.position.set(...view.pos); cam.lookAt(...view.look); cam.updateMatrixWorld(); cam.updateProjectionMatrix();
+  const pts = [];
+  for (const [x, y] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+    const p = new THREE.Vector3(x, y, 0.5).unproject(cam).sub(cam.position).normalize();
+    const t = p.y < -0.05 ? -cam.position.y / p.y : 40;
+    const hit = cam.position.clone().addScaledVector(p, Math.min(t, 40));
+    pts.push([clamp(hit.x, -FIELD_LIMIT, FIELD_LIMIT), clamp(hit.z, -FIELD_LIMIT, FIELD_LIMIT)]);
+  }
+  return pts;
+}
+
+function buildField() {
+  const aspect = window.innerWidth / Math.max(1, window.innerHeight);
+  let minX = 1e9, minZ = 1e9, maxX = -1e9, maxZ = -1e9;
+  for (const v of VIEWS) for (const [x, z] of footprint(v, aspect)) {
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+  }
+  minX -= 1.5; minZ -= 1.5; maxX += 1.5; maxZ += 1.5;
+  const w = maxX - minX, d = maxZ - minZ;
+  fieldArea = w * d;
+  const spacing = Math.sqrt(fieldArea / MAX_BLADES);
+  const nx = Math.ceil(w / spacing), nz = Math.ceil(d / spacing);
+  const n = nx * nz;
+  const cells = new Float32Array(n * 2);
+  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const k = (j * nx + i) * 2; cells[k] = i; cells[k + 1] = j; }
+  let s = 12345;
+  for (let k = n - 1; k > 0; k--) {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    const r = s % (k + 1);
+    const ax = cells[2 * k], az = cells[2 * k + 1];
+    cells[2 * k] = cells[2 * r]; cells[2 * k + 1] = cells[2 * r + 1];
+    cells[2 * r] = ax; cells[2 * r + 1] = az;
+  }
+  bladeGeo.setAttribute("aCell", new THREE.InstancedBufferAttribute(cells, 2));
+  grassUniforms.uSpacing.value = spacing;
+  grassUniforms.uFieldMin.value.set(minX, minZ);
+  groundMat.uniforms.uFieldMax.value.set(maxX, maxZ);
+  bladeGeo.maxCells = n;
+  setBudget(budget);
+}
+
+function setBudget(b) {
+  budget = clamp(Math.round(b), 15000, Math.min(MAX_BLADES, bladeGeo.maxCells || MAX_BLADES));
+  bladeGeo.instanceCount = budget;
+  grassUniforms.uWidthScale.value = Math.sqrt(MAX_BLADES / budget) * 0.9;
+}
+
+// ---- touch glow and pollen ----------------------------------------------------
+function dotTexture() {
+  const c = document.createElement("canvas"); c.width = c.height = 64;
+  const g = c.getContext("2d");
+  const grd = g.createRadialGradient(32, 32, 0, 32, 32, 32);
+  grd.addColorStop(0, "rgba(255,255,255,1)"); grd.addColorStop(0.35, "rgba(255,255,255,0.45)"); grd.addColorStop(1, "rgba(255,255,255,0)");
+  g.fillStyle = grd; g.fillRect(0, 0, 64, 64);
+  const t = new THREE.CanvasTexture(c);
+  return t;
+}
+const dotTex = dotTexture();
+
+const POLLEN = 360;
+const pollenGeo = new THREE.BufferGeometry();
+const pPos = new Float32Array(POLLEN * 3), pCol = new Float32Array(POLLEN * 3);
+const pVel = new Float32Array(POLLEN * 3), pLife = new Float32Array(POLLEN);
+for (let i = 0; i < POLLEN; i++) pPos[i * 3 + 1] = -100;
+pollenGeo.setAttribute("position", new THREE.BufferAttribute(pPos, 3));
+pollenGeo.setAttribute("color", new THREE.BufferAttribute(pCol, 3));
+const pollen = new THREE.Points(pollenGeo, new THREE.PointsMaterial({
+  size: 0.14, map: dotTex, vertexColors: true, transparent: true, depthWrite: false,
+  blending: THREE.AdditiveBlending, sizeAttenuation: true,
+}));
+pollen.frustumCulled = false;
+scene.add(pollen);
+let pollenNext = 0;
+
+function burst(at, rgb, strength) {
+  for (let k = 0; k < 14; k++) {
+    const i = pollenNext; pollenNext = (pollenNext + 1) % POLLEN;
+    const a = Math.random() * Math.PI * 2, r = Math.random() * 0.25;
+    pPos[i * 3] = at.x + Math.cos(a) * r; pPos[i * 3 + 1] = GRASS_TOP + Math.random() * 0.2; pPos[i * 3 + 2] = at.z + Math.sin(a) * r;
+    pVel[i * 3] = Math.cos(a) * 0.3 * Math.random(); pVel[i * 3 + 1] = 0.25 + 0.5 * Math.random() * strength; pVel[i * 3 + 2] = Math.sin(a) * 0.3 * Math.random();
+    pLife[i] = 1.6 + Math.random() * 0.8;
+    const m = 0.6 + 0.4 * Math.random();
+    pCol[i * 3] = lerp(rgb[0], 1, 0.4) * m; pCol[i * 3 + 1] = lerp(rgb[1], 1, 0.4) * m; pCol[i * 3 + 2] = lerp(rgb[2], 0.9, 0.4) * m;
+  }
+}
+
+function stepPollen(dt) {
+  for (let i = 0; i < POLLEN; i++) {
+    if (pLife[i] <= 0) continue;
+    pLife[i] -= dt;
+    const k = i * 3;
+    pVel[k] += 0.15 * dt; pVel[k + 1] += 0.05 * dt; pVel[k + 2] -= 0.08 * dt;
+    pVel[k] *= 1 - 0.5 * dt; pVel[k + 1] *= 1 - 0.5 * dt; pVel[k + 2] *= 1 - 0.5 * dt;
+    pPos[k] += pVel[k] * dt; pPos[k + 1] += pVel[k + 1] * dt; pPos[k + 2] += pVel[k + 2] * dt;
+    const fade = Math.min(1, pLife[i] / 0.8);
+    pCol[k] *= fade > 0.999 ? 1 : 0.985; pCol[k + 1] *= fade > 0.999 ? 1 : 0.985; pCol[k + 2] *= fade > 0.999 ? 1 : 0.985;
+    if (pLife[i] <= 0) pPos[k + 1] = -100;
+  }
+  pollenGeo.attributes.position.needsUpdate = true;
+  pollenGeo.attributes.color.needsUpdate = true;
+}
+
+const glowMat = new THREE.SpriteMaterial({ map: dotTex, color: 0xfff1cf, transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending, opacity: 0.0 });
+
+// ---- sound ---------------------------------------------------------------------
+let ctx = null, node = null, mainEngine = null, analyser = null, freqData = null;
+const music = new THREE.Vector3();
+
+function post(c) {
+  if (node && node.port) node.port.postMessage(c);
+  else if (mainEngine) mainEngine.command(c);
+}
+
+function impulse(ctx, seconds) {
+  const len = Math.floor(ctx.sampleRate * seconds), pre = Math.floor(ctx.sampleRate * 0.04);
+  const ir = ctx.createBuffer(2, len, ctx.sampleRate);
+  for (let ch = 0; ch < 2; ch++) {
+    const d = ir.getChannelData(ch);
+    let lp = 0;
+    for (let i = pre; i < len; i++) {
+      const t = (i - pre) / ctx.sampleRate;
+      lp += (0.35 + 0.5 * Math.exp(-t * 2)) * ((Math.random() * 2 - 1) - lp);
+      d[i] = lp * Math.exp(-t * 2.4);
+    }
+  }
+  return ir;
+}
+
+async function startAudio() {
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) { showError("Webbläsaren har inget Web Audio, så det blir tyst."); return; }
+  try { if (navigator.audioSession) navigator.audioSession.type = "playback"; } catch (e) {}
+  ctx = new AC({ latencyHint: "interactive" });
+  const mobile = /Android|iPhone|iPad/.test(navigator.userAgent);
+  const voices = mobile ? 32 : 48;
+  let source = null;
+  if (ctx.audioWorklet) {
+    try {
+      const code = "const TouchGrassEngine = " + TouchGrassEngine.toString() + ";\n(" +
+        TouchGrassProcessor.toString() + ")(TouchGrassEngine());";
+      const url = URL.createObjectURL(new Blob([code], { type: "application/javascript" }));
+      await ctx.audioWorklet.addModule(url);
+      node = new AudioWorkletNode(ctx, "grass-engine", { numberOfInputs: 0, outputChannelCount: [2], processorOptions: { voices } });
+      source = node;
+    } catch (e) { node = null; }
+  }
+  if (!source) {
+    // the browser refused the worklet: run the engine on the main thread
+    mainEngine = new E.GrassEngine(ctx.sampleRate, voices);
+    const sp = ctx.createScriptProcessor(1024, 0, 2);
+    sp.onaudioprocess = (ev) => {
+      const L = ev.outputBuffer.getChannelData(0), R = ev.outputBuffer.getChannelData(1);
+      mainEngine.render(L, R, L.length);
+    };
+    source = sp;
+  }
+  const master = ctx.createGain(); master.gain.value = 1.0;
+  const dry = ctx.createGain(); dry.gain.value = 0.9;
+  const wet = ctx.createGain(); wet.gain.value = 0.32;
+  const reverb = ctx.createConvolver(); reverb.buffer = impulse(ctx, 3.2);
+  source.connect(dry).connect(master);
+  source.connect(reverb).connect(wet).connect(master);
+  analyser = ctx.createAnalyser(); analyser.fftSize = 1024; analyser.smoothingTimeConstant = 0.6;
+  freqData = new Float32Array(analyser.frequencyBinCount);
+  master.connect(analyser).connect(ctx.destination);
+  if (ctx.state !== "running") await ctx.resume();
+  post({ t: "chord", root: CHORDS[2][0], quality: CHORDS[2][1] });
+}
+
+function listenToMusic(dt) {
+  if (!analyser) return;
+  analyser.getFloatFrequencyData(freqData);
+  const binHz = ctx.sampleRate / analyser.fftSize;
+  const bands = [[40, 250], [250, 2000], [2000, 9000]];
+  for (let k = 0; k < 3; k++) {
+    const a = Math.max(1, Math.floor(bands[k][0] / binHz)), b = Math.min(freqData.length - 1, Math.ceil(bands[k][1] / binHz));
+    let p = 0;
+    for (let i = a; i <= b; i++) p += Math.pow(10, freqData[i] / 10);
+    const db = 10 * Math.log10(p + 1e-12);
+    const now = clamp((db + 70) / 45, 0, 1);
+    const key = k === 0 ? "x" : k === 1 ? "y" : "z";
+    const rate = now > music[key] ? 0.08 : 0.6;
+    music[key] = lerp(music[key], now, 1 - Math.exp(-dt / rate));
+  }
+  grassUniforms.uMusic.value.copy(music);
+}
+
+// ---- fingers on the plates ----------------------------------------------------
+// Each finger has its own strum state, as each hand did in the Godot app.
+const plates = CHORDS.map((c) => E.plate(c[0], c[1]));
+const fingers = new Map();
+let dronePlate = 2;
+const ripples = [];
+
+function newFinger(id) {
+  const sprite = new THREE.Sprite(glowMat.clone());
+  sprite.scale.set(1.1, 1.1, 1);
+  scene.add(sprite);
+  return { id, plate: -1, prev: -1, armed: new Uint8Array(16).fill(1), speed: 0, depth: 0,
+           world: new THREE.Vector3(), vel: new THREE.Vector2(), last: 0, sprite, sx: 0, sy: 0, down: true, lastPluck: -10 };
+}
+
+const ray = new THREE.Raycaster();
+const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -GRASS_TOP * 0.8);
+function worldAt(sx, sy, out) {
+  ray.setFromCamera(new THREE.Vector2(sx * 2 - 1, 1 - sy * 2), camera);
+  return ray.ray.intersectPlane(plane, out);
+}
+
+function strum(f, sx, sy, t) {
+  const n = plates[0].length;
+  const band = clamp(sy, 0, 0.9999) * CHORDS.length;
+  const want = Math.floor(band);
+  if (f.plate < 0) { f.plate = want; f.prev = -1; }
+  else if (want !== f.plate) {
+    const into = band - f.plate;
+    if (into < -BAND_HYST || into > 1 + BAND_HYST) { f.plate = want; f.prev = -1; f.armed.fill(1); }
+  }
+  const s = (sx - STRING_LEFT) / (STRING_RIGHT - STRING_LEFT) * (n - 1);
+  const dt = Math.max(1e-3, (t - f.last) / 1000);
+  if (f.prev < 0) { f.prev = s; f.last = t; return; }
+  const moved = s - f.prev;
+  f.speed = lerp(f.speed, Math.abs(moved) / dt, 0.25);
+  f.last = t;
+  if (Math.abs(moved) > 1e-5) {
+    const lo = Math.max(Math.ceil(Math.min(f.prev, s)), 0), hi = Math.min(Math.floor(Math.max(f.prev, s)), n - 1);
+    const order = [];
+    for (let k = lo; k <= hi; k++) order.push(k);
+    if (moved < 0) order.reverse();
+    for (const k of order) {
+      if (Math.abs(k - f.prev) < 1e-6 || !f.armed[k]) continue;
+      const vel = clamp(0.35 + 0.35 * clamp(f.speed / 20, 0, 1) + 0.3 * depthFor(f), 0.15, 1);
+      post({ t: "pluckNote", note: plates[f.plate][k], vel, delay: 0 });
+      f.armed[k] = 0;
+      f.lastPluck = performance.now();
+      onPluck(f, vel);
+    }
+  }
+  for (let k = 0; k < n; k++) if (!f.armed[k] && Math.abs(s - k) > REARM) f.armed[k] = 1;
+  f.prev = s;
+}
+
+function onPluck(f, vel) {
+  const col = PLATE_COLORS[f.plate];
+  burst(f.world, col, vel);
+  ripples.push({ x: f.world.x, z: f.world.z, age: 0, strength: vel, col });
+  if (ripples.length > MAX_RIPPLE) ripples.shift();
+  plateGlow[f.plate] = 1;
+  if (f.plate !== dronePlate) { dronePlate = f.plate; post({ t: "chord", root: CHORDS[f.plate][0], quality: CHORDS[f.plate][1] }); }
+}
+
+// ---- depth: the phone's tilt where the browser reports it, else the finger's speed
+let tiltOn = false, tiltRest = null, tiltDepth = 0, tiltSeen = 0;
+function tiltAxis(e) {
+  const angle = (screen.orientation && screen.orientation.angle) || window.orientation || 0;
+  if (angle === 90) return -e.gamma;
+  if (angle === -90 || angle === 270) return e.gamma;
+  return e.beta;
+}
+function onOrientation(e) {
+  if (e.beta == null) return;
+  const a = tiltAxis(e);
+  tiltSeen = performance.now();
+  if (tiltRest === null) tiltRest = a;
+  tiltOn = true;
+  // tipping the top of the phone away from you presses into the grass
+  tiltDepth = clamp((tiltRest - a - 3) / 22, 0, 1);
+}
+window.addEventListener("orientationchange", () => { tiltRest = null; });
+
+function depthFor(f) { return tiltOn ? tiltDepth : f.depth; }
+
+// ---- pointers ------------------------------------------------------------------
+const canvas = renderer.domElement;
+function pointerXY(e) { return [e.clientX / window.innerWidth, e.clientY / window.innerHeight]; }
+
+canvas.addEventListener("pointerdown", (e) => {
+  if (!started) return;
+  canvas.setPointerCapture(e.pointerId);
+  const f = newFinger(e.pointerId);
+  const [sx, sy] = pointerXY(e);
+  f.sx = sx; f.sy = sy; f.last = e.timeStamp;
+  worldAt(sx, sy, f.world);
+  fingers.set(e.pointerId, f);
+  strum(f, sx, sy, e.timeStamp);
+  e.preventDefault();
+});
+canvas.addEventListener("pointermove", (e) => {
+  const f = fingers.get(e.pointerId);
+  if (!f) return;
+  const list = e.getCoalescedEvents ? e.getCoalescedEvents() : [e];
+  for (const c of (list.length ? list : [e])) {
+    const [sx, sy] = pointerXY(c);
+    const prevWorld = f.world.clone();
+    if (worldAt(sx, sy, f.world)) {
+      const dt = Math.max(1e-3, (c.timeStamp - f.last) / 1000);
+      f.vel.lerp(new THREE.Vector2((f.world.x - prevWorld.x) / dt, (f.world.z - prevWorld.z) / dt), 0.3);
+    }
+    f.sx = sx; f.sy = sy;
+    strum(f, sx, sy, c.timeStamp);
+  }
+  e.preventDefault();
+});
+function lift(e) {
+  const f = fingers.get(e.pointerId);
+  if (!f) return;
+  f.down = false;
+  fingers.delete(e.pointerId);
+  leaving.push(f);
+}
+const leaving = [];
+canvas.addEventListener("pointerup", lift);
+canvas.addEventListener("pointercancel", lift);
+canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+
+// ---- plate names: a faint chord name at the left edge while a finger plays there
+const plateGlow = new Float32Array(CHORDS.length);
+const plateLabels = CHORDS.map((c, k) => {
+  const el = document.createElement("div");
+  el.className = "plate-name";
+  el.textContent = c[2];
+  el.style.top = ((k + 0.5) / CHORDS.length * 100) + "%";
+  const rgb = PLATE_COLORS[k].map((v) => Math.round(lerp(v, 1, 0.5) * 255));
+  el.style.color = `rgb(${rgb.join(",")})`;
+  $("plates").appendChild(el);
+  return el;
+});
+const plateAlpha = new Float32Array(CHORDS.length);
+
+// ---- time of day ---------------------------------------------------------------
+const KEYS = [
+  { e: -18, hor: [0.035, 0.05, 0.10], light: [0.55, 0.65, 1.0], energy: 0.16, amb: [0.07, 0.09, 0.16], warm: 0.0, fog: 0.03 },
+  { e: -5, hor: [0.62, 0.40, 0.40], light: [0.9, 0.5, 0.4], energy: 0.10, amb: [0.20, 0.17, 0.24], warm: 0.2, fog: 0.022 },
+  { e: 4, hor: [1.0, 0.70, 0.45], light: [1.0, 0.62, 0.32], energy: 1.1, amb: [0.32, 0.30, 0.34], warm: 0.9, fog: 0.016 },
+  { e: 16, hor: [0.90, 0.88, 0.80], light: [1.0, 0.86, 0.66], energy: 1.5, amb: [0.36, 0.42, 0.50], warm: 0.35, fog: 0.012 },
+  { e: 45, hor: [0.70, 0.84, 0.97], light: [1.0, 0.96, 0.88], energy: 1.7, amb: [0.40, 0.47, 0.56], warm: 0.0, fog: 0.010 },
+];
+let hour = 15;
+function sunDirection(h) {
+  let a;
+  if (h >= 5 && h <= 21) a = (h - 5) / 16 * Math.PI;
+  else a = Math.PI + (((h - 21) % 24 + 24) % 24) / 8 * Math.PI;
+  let elev = Math.sin(a) * (Math.sin(a) < 0 ? 18 : 52) * Math.PI / 180;
+  const flat = Math.sin(a) < 0 ? new THREE.Vector3(Math.cos(a), 0, Math.sin(a)) : new THREE.Vector3(Math.cos(a), 0, -Math.sin(a));
+  return flat.multiplyScalar(Math.cos(elev)).add(new THREE.Vector3(0, Math.sin(elev), 0)).normalize();
+}
+function applyHour(h) {
+  hour = ((h % 24) + 24) % 24;
+  const sun = sunDirection(hour);
+  const elev = Math.asin(sun.y) * 180 / Math.PI;
+  let k = KEYS[KEYS.length - 1];
+  if (elev <= KEYS[0].e) k = KEYS[0];
+  else for (let i = 1; i < KEYS.length; i++) if (elev <= KEYS[i].e) {
+    const a = KEYS[i - 1], b = KEYS[i], t = smooth(a.e, b.e, elev);
+    k = {};
+    for (const key in a) k[key] = Array.isArray(a[key]) ? a[key].map((v, j) => lerp(v, b[key][j], t)) : lerp(a[key], b[key], t);
+    break;
+  }
+  let dir = sun;
+  const night = 1 - smooth(-8, -3, elev);
+  if (night > 0) dir = sun.clone().lerp(new THREE.Vector3(-0.35, 0.55, -0.75).normalize(), night).normalize();
+  lightUniforms.uSunDir.value.copy(dir);
+  lightUniforms.uSunCol.value.setRGB(k.light[0] * k.energy, k.light[1] * k.energy, k.light[2] * k.energy);
+  lightUniforms.uAmbient.value.setRGB(...k.amb);
+  lightUniforms.uFogCol.value.setRGB(...k.hor);
+  lightUniforms.uFogDensity.value = k.fog;
+  lightUniforms.uWarm.value = k.warm;
+  const fogSrgb = k.hor.map((v) => Math.pow(clamp(v, 0, 1), 1 / 2.2));
+  renderer.setClearColor(new THREE.Color(...fogSrgb));
+  const hh = Math.floor(hour), mm = Math.round((hour - hh) * 60) % 60;
+  $("clock").textContent = `Tid ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+}
+
+// ---- camera views ----------------------------------------------------------------
+let viewIndex = 0, glide = 1, from = null, to = null;
+function viewState(v) { return { pos: new THREE.Vector3(...v.pos), look: new THREE.Vector3(...v.look), fov: v.fov }; }
+function goToView(i, instant) {
+  viewIndex = ((i % VIEWS.length) + VIEWS.length) % VIEWS.length;
+  from = to ? { pos: camera.position.clone(), look: to.look.clone(), fov: camera.fov } : viewState(VIEWS[viewIndex]);
+  to = viewState(VIEWS[viewIndex]);
+  if (from && to && glide < 1) from.look = currentLook.clone();
+  glide = instant ? 1 : 0;
+  $("view").textContent = "Vy: " + VIEWS[viewIndex].name;
+}
+const currentLook = new THREE.Vector3();
+function placeCamera(dt, time) {
+  if (glide < 1) glide = Math.min(1, glide + dt / 2.5);
+  const e = glide * glide * (3 - 2 * glide);
+  const pos = from.pos.clone().lerp(to.pos, e);
+  currentLook.copy(from.look).lerp(to.look, e);
+  pos.y += Math.sin(e * Math.PI) * 0.12 * from.pos.distanceTo(to.pos);
+  pos.add(new THREE.Vector3(Math.sin(time * 0.21), Math.sin(time * 0.17 + 1.3) * 0.6, Math.cos(time * 0.13)).multiplyScalar(0.05));
+  camera.fov = lerp(from.fov, to.fov, e);
+  camera.position.copy(pos);
+  camera.lookAt(currentLook);
+  camera.updateProjectionMatrix();
+}
+
+// ---- resize ------------------------------------------------------------------------
+function resize() {
+  const w = window.innerWidth, h = window.innerHeight;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / Math.max(1, h);
+  camera.updateProjectionMatrix();
+  buildField();
+}
+window.addEventListener("resize", resize);
+
+// ---- the frame ---------------------------------------------------------------------
+let started = false, last = performance.now(), clockTime = 0;
+let fpsTime = 0, fpsFrames = 0, tuned = 0;
+const bendTouch = bendMat.uniforms.uTouch.value, bendDrag = bendMat.uniforms.uDrag.value;
+
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000);
+  last = now;
+  clockTime += dt;
+  grassUniforms.uTime.value = clockTime;
+  placeCamera(dt, clockTime);
+
+  // depth from speed where there is no tilt: a quick sweep presses deeper
+  let deepest = 0;
+  for (const f of fingers.values()) {
+    const want = clamp(f.speed / 22, 0, 1);
+    f.depth = lerp(f.depth, want, 1 - Math.exp(-dt / (want > f.depth ? 0.05 : 0.4)));
+    f.speed *= Math.exp(-dt / 0.25);
+    deepest = Math.max(deepest, depthFor(f));
+  }
+  if (tiltOn && performance.now() - tiltSeen > 2000) tiltOn = false;
+  if (started) post({ t: "tone", v: 0.35 + 0.65 * (fingers.size ? deepest : (tiltOn ? tiltDepth : 0.4)) });
+
+  // stamp the fingers into the bend field
+  let n = 0;
+  const viewScale = clamp(camera.position.y / 11, 0.6, 1.6);
+  for (const f of fingers.values()) {
+    if (n >= MAX_TOUCH) break;
+    const sp = f.vel.length();
+    const drag = sp > 1e-3 ? f.vel.clone().multiplyScalar(clamp(sp / 3, 0, 1) / sp) : new THREE.Vector2();
+    bendTouch[n].set(f.world.x, f.world.z, 0.65 * viewScale, 0.35 + 0.65 * depthFor(f));
+    bendDrag[n].set(drag.x, drag.y, 0.45, 0);
+    f.vel.multiplyScalar(Math.exp(-dt / 0.15));
+    f.sprite.position.set(f.world.x, GRASS_TOP + 0.15, f.world.z);
+    f.sprite.material.opacity = lerp(f.sprite.material.opacity, 0.35 + 0.4 * depthFor(f), 0.2);
+    f.sprite.scale.setScalar((0.9 + 0.4 * depthFor(f)) * viewScale);
+    n++;
+  }
+  bendMat.uniforms.uCount.value = n;
+  for (let i = leaving.length - 1; i >= 0; i--) {
+    const f = leaving[i];
+    f.sprite.material.opacity *= Math.exp(-dt / 0.2);
+    if (f.sprite.material.opacity < 0.01) { scene.remove(f.sprite); f.sprite.material.dispose(); leaving.splice(i, 1); }
+  }
+  bendMat.uniforms.uDecay.value = 1 - Math.exp(-dt / 2.6);
+  bendMat.uniforms.uPrev.value = bendA.texture;
+  passQuad.material = bendMat;
+  renderer.setRenderTarget(bendB);
+  renderer.render(passScene, passCam);
+  bendMat.uniforms.uInit.value = 0;
+  [bendA, bendB] = [bendB, bendA];
+  grassUniforms.uBend.value = bendA.texture;
+
+  // ripples
+  const rings = rippleMat.uniforms.uRings.value, cols = rippleMat.uniforms.uColors.value;
+  for (let i = ripples.length - 1; i >= 0; i--) { ripples[i].age += dt; if (ripples[i].age > 4) ripples.splice(i, 1); }
+  for (let i = 0; i < MAX_RIPPLE; i++) {
+    const r = ripples[i];
+    if (r) { rings[i].set(r.x, r.z, r.age, r.strength); cols[i].set(...r.col); }
+    else rings[i].set(0, 0, 0, 0);
+  }
+  passQuad.material = rippleMat;
+  renderer.setRenderTarget(rippleRT);
+  renderer.render(passScene, passCam);
+  renderer.setRenderTarget(null);
+
+  stepPollen(dt);
+  listenToMusic(dt);
+
+  for (let k = 0; k < CHORDS.length; k++) {
+    let want = 0;
+    for (const f of fingers.values()) if (f.plate === k) want = Math.max(want, 0.25 + 0.6 * Math.exp(-(performance.now() - f.lastPluck) / 500));
+    plateGlow[k] = Math.max(0, plateGlow[k] - dt);
+    plateAlpha[k] = clamp(lerp(plateAlpha[k], Math.max(want, plateGlow[k] * 0.5), want > plateAlpha[k] ? 0.25 : 0.04), 0, 1);
+    plateLabels[k].style.opacity = plateAlpha[k].toFixed(3);
+  }
+
+  renderer.render(scene, camera);
+
+  // keep the frame rate: fewer blades on a struggling phone, more on a strong one
+  fpsTime += dt; fpsFrames++;
+  if (fpsTime > 2.5) {
+    const fps = fpsFrames / fpsTime;
+    if (tuned < 6) {
+      if (fps < 42) { setBudget(budget * 0.7); tuned++; }
+      else if (fps > 57 && budget < MAX_BLADES) { setBudget(budget * 1.25); tuned++; }
+    }
+    window.__tg = { fps: Math.round(fps), blades: budget, worklet: !!node, floatTargets, tilt: tiltOn };
+    fpsTime = 0; fpsFrames = 0;
+  }
+  requestAnimationFrame(frame);
+}
+
+// ---- start -----------------------------------------------------------------------
+$("begin").addEventListener("click", async () => {
+  $("start").classList.add("gone");
+  $("controls").hidden = false;
+  started = true;
+  try {
+    if (typeof DeviceOrientationEvent !== "undefined" && DeviceOrientationEvent.requestPermission) {
+      const r = await DeviceOrientationEvent.requestPermission();
+      if (r === "granted") window.addEventListener("deviceorientation", onOrientation);
+    } else {
+      window.addEventListener("deviceorientation", onOrientation);
+    }
+  } catch (e) { /* no tilt: speed sets depth */ }
+  try { await startAudio(); } catch (e) { showError("Ljudet kunde inte starta: " + e.message); }
+  try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (e) {}
+  const hint = $("hint");
+  hint.textContent = "Dra ett finger i sidled · högre eller lägre på skärmen byter ackord";
+  hint.hidden = false;
+  setTimeout(() => { hint.style.opacity = "0"; }, 6500);
+});
+
+$("view").addEventListener("click", () => goToView(viewIndex + 1, false));
+$("clock").addEventListener("click", () => { $("timerow").hidden = !$("timerow").hidden; });
+$("hour").addEventListener("input", (e) => applyHour(parseFloat(e.target.value)));
+
+goToView(0, true);
+applyHour(15);
+resize();
+requestAnimationFrame((t) => { last = t; frame(t); });
+</script>
+
+</body></html>

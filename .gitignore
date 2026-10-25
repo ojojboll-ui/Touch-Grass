@@ -6,3 +6,8 @@ bin/*.lib
 bin/*.exp
 bin/*.pdb
 gdext/build.log
+web/dist/
+gdext/test/dump.f32
+gdext/test/*.exe
+gdext/test/*.obj
+.claude/
