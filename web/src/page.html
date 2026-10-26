@@ -84,6 +84,21 @@ body {
   -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
   opacity: 0.7;
 }
+/* Portrait: the chord names in one row along the top, the controls below them.
+   Landscape keeps them down the left edge beside their plates. */
+@media (orientation: portrait) {
+  #plates {
+    inset: calc(10px + env(safe-area-inset-top, 0px)) 0 auto 0;
+    display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;
+    padding-left: max(12px, env(safe-area-inset-left, 0px));
+    padding-right: max(12px, env(safe-area-inset-right, 0px));
+  }
+  .plate-name {
+    position: static; transform: scale(var(--lift, 1)); transform-origin: center;
+    font-size: clamp(0.85rem, 3.8vw, 1.15rem); padding: 6px 11px 7px;
+  }
+  #controls { top: calc(58px + env(safe-area-inset-top, 0px)); }
+}
 #hint {
   position: fixed; z-index: 3; left: 50%; transform: translateX(-50%);
   bottom: calc(18px + env(safe-area-inset-bottom, 0px));

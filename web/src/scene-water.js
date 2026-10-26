@@ -179,7 +179,7 @@ const waterScene = (() => {
         gl_FragColor = vec4(pow(tonemap(col), vec3(1.0 / 2.2)), alpha);
       }`,
   });
-  const surface = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE, 180, 180), surfaceMat);
+  const surface = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE, 240, 240), surfaceMat);
   surface.rotation.x = -Math.PI / 2;
   surface.renderOrder = 2;
   group.add(surface);
@@ -205,9 +205,10 @@ const waterScene = (() => {
       vec2 lp = position.xz * iPose.w;
       vec2 r = vec2(lp.x * c.x - lp.y * c.y, lp.x * c.y + lp.y * c.x);
       vec2 xz = iPose.xy + r;
-      vec2 sl = slopeAt(iPose.xy);
-      // iLook.w lifts a floater: leaves lie in layers, and on a pad when they drift onto one
-      float y = heightAt(iPose.xy) + dot(sl, r) + 0.012 + iLook.w + position.y * iPose.w;
+      // each vertex rides the water right under it, a little above, so the pad
+      // bends over a passing wave and the water never laps over it; iLook.w lifts
+      // leaves into layers, and onto a pad when they drift over one
+      float y = heightAt(xz) + 0.025 + iLook.w + position.y * iPose.w;
       vWorld = vec3(xz.x, y, xz.y);
       vLocal = position.xz; vLook = iLook;
       gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
@@ -224,8 +225,29 @@ const waterScene = (() => {
   }
 
   // a pad: a disc with a notch, flat in xz
-  const padBase = new THREE.CircleGeometry(1, 32, 0.2, Math.PI * 2 - 0.4);
-  padBase.rotateX(-Math.PI / 2);
+  // a pad: a disc with a notch, as a polar grid fine enough to bend with the waves.
+  // (Quaternius' CC0 lily pad on Poly Pizza is a flat 36-triangle disc: too coarse
+  // to ride a wave, and the same shape, so the pad is built here.)
+  function padGeometry() {
+    const RINGS = 6, SEG = 40, start = 0.2, span = Math.PI * 2 - 0.4;
+    const pos = [0, 0, 0], idx = [];
+    for (let r = 1; r <= RINGS; r++) {
+      const rad = r / RINGS;
+      for (let k = 0; k <= SEG; k++) {
+        const a = start + span * k / SEG;
+        pos.push(Math.cos(a) * rad, 0.03 * rad * rad, Math.sin(a) * rad);   // the rim turns up a touch
+      }
+    }
+    const at = (r, k) => 1 + (r - 1) * (SEG + 1) + k;
+    for (let k = 0; k < SEG; k++) idx.push(0, at(1, k + 1), at(1, k));
+    for (let r = 1; r < RINGS; r++) for (let k = 0; k < SEG; k++)
+      idx.push(at(r, k), at(r, k + 1), at(r + 1, k + 1), at(r, k), at(r + 1, k + 1), at(r + 1, k));
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    return g;
+  }
+  const padBase = padGeometry();
   const PADS = 20;
   const padGeo = floaterGeometry(padBase, PADS);
   const padMat = new THREE.ShaderMaterial({
@@ -289,7 +311,7 @@ const waterScene = (() => {
   lotusGeo.instanceCount = LOTUS;
   const lotusMat = new THREE.ShaderMaterial({
     uniforms: common, side: THREE.DoubleSide,
-    vertexShader: FLOAT_VERT.replace("varying vec2 vLocal;", "attribute float aU; varying float vU; varying vec2 vLocal;").replace("vLocal = position.xz;", "vLocal = position.xz; vU = aU;"),
+    vertexShader: FLOAT_VERT.replace("varying vec2 vLocal;", "attribute float aU; varying float vU; varying vec2 vLocal;").replace("vLocal = position.xz;", "vLocal = position.xz; vU = aU;").replace("float y = heightAt(xz) + 0.025", "float y = heightAt(iPose.xy) + 0.05"),
     fragmentShader: `
       uniform vec3 uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
       varying float vU; varying vec2 vLocal; varying vec4 vLook; varying vec3 vWorld;
@@ -306,7 +328,7 @@ const waterScene = (() => {
   group.add(lotus);
 
   // leaves and petals: a quad each, its shape cut out in the shader
-  const bitBase = new THREE.PlaneGeometry(1, 1);
+  const bitBase = new THREE.PlaneGeometry(1, 1, 3, 3);
   bitBase.rotateX(-Math.PI / 2);
   const BITS = 150;
   const bitGeo = floaterGeometry(bitBase, BITS);
