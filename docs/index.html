@@ -2341,12 +2341,14 @@ const sandScene = (() => {
           // wall off the groove it continues, or a line becomes a row of beads
           if (d > 0.85 && d < 1.75 && h > -0.002) h = max(h, rim);
         }
-        // the heaps shovelled ahead of the fingers
+        // the heaps shovelled ahead of the fingers, lying over whatever is
+        // there: a heap pushed across a pit or a groove sits in it, it does not
+        // fill it, so a pit a finger climbs out of keeps its shape
         for (int i = 0; i < ${MAX_HEAP}; i++) {
           if (i >= uHeapCount) break;
           float d = length(w - uHeap[i].xy) / uHeap[i].z;
           float k = max(1.0 - d * d, 0.0);
-          if (k > 0.0) h = max(h, uHeap[i].w * k * k);
+          if (k > 0.0) h = max(h, min(h, 0.0) + uHeap[i].w * k * k);
         }
         gl_FragColor = vec4(encode(h), 0.0, 0.0, 1.0);
       }`,
@@ -2600,12 +2602,11 @@ const sandScene = (() => {
         st.dig = Math.min(MAX_DIG, st.dig + dt * 0.32 * t.depth * (1 - 0.5 * st.dig / MAX_DIG));
         if (spray && st.dig > before + 1e-4) burst({ x: t.x, y: 0, z: t.z }, SAND, 0.2 + st.dig * 0.6, "sand", 2);
       } else {
-        // moving: it leaves its pit behind, and pushes the sand it cuts ahead of it
-        const before = st.dig;
+        // moving: it climbs out of its pit (whose sand is already in the rim) and
+        // pushes the sand it cuts ahead of it; a dragged hand gathers more than
+        // the groove it leaves, and spills little
         st.dig *= Math.exp(-moved / 0.35);
-        const out = 2.9 * (before ** 3 - st.dig ** 3);         // the cone it climbed out of
-        // a dragged hand gathers more than the groove it leaves, and spills little
-        st.load = st.load * Math.exp(-moved / 12) + out + 2 * moved * (4 / 3) * radius * depth * (0.15 + 0.85 * t.depth);
+        st.load = st.load * Math.exp(-moved / 12) + 2 * moved * (4 / 3) * radius * depth * (0.15 + 0.85 * t.depth);
       }
       addStroke(t.px, t.pz, t.x, t.z, radius, depth, depth * 0.45 + st.dig * 0.3, st.dig);
       if (moved > 1e-4 && st.load > 0) {
