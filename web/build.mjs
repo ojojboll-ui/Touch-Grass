@@ -10,7 +10,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const page = readFileSync(path.join(here, "src", "page.html"), "utf8");
 const engine = readFileSync(path.join(here, "engine.js"), "utf8").replace(/\nif \(typeof module[^\n]*\n?$/, "\n");
 // the scenes, in the order the picker shows them
-const scenes = ["scene-meadow.js", "scene-water.js", "scene-sand.js"].map((f) => readFileSync(path.join(here, "src", f), "utf8")).join("\n\n");
+const scenes = ["scene-meadow.js", "scene-water.js", "scene-sand.js", "scene-clouds.js"].map((f) => readFileSync(path.join(here, "src", f), "utf8")).join("\n\n");
 const content = page.replace("/*ENGINE*/", () => engine).replace("/*SCENES*/", () => scenes);
 
 mkdirSync(path.join(here, "dist"), { recursive: true });

@@ -24,6 +24,8 @@ function TouchGrassEngine() {
     { name: "CELLO", bowed: true, decayScale: 1.0 },
     // not a pluck either: each string is a breath into a reed flute
     { name: "NEY", blown: true, decayScale: 1.0 },
+    // Chordtroller's Juno voice played as a keyboard: each string a key held a while
+    { name: "JUNO", synth: true, decayScale: 1.0 },
   ];
 
   const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -188,13 +190,18 @@ function TouchGrassEngine() {
 
   function softClip(x) { x = clamp(x, -3, 3); return x * (27 + x * x) / (27 + 9 * x * x); }
 
+  // The clouds' patch: PAD's oscillators with a quicker, brighter bloom, so a
+  // strum still articulates each string, and a release the ring time sets
+  const CLOUD = { saw: 0.75, pulse: 0.50, sub: 0.25, noise: 0.0, pw: 0.50, pwm: 0.45, lfoRate: 0.5,
+                  env: 0.40, key: 0.30, hpf: 0.10, A: 0.035, D: 1.40, S: 0.55, R: 1.60, level: 0.60 };
+
   class JunoVoice {
-    constructor(sr) {
-      this.sr = sr; this.p = PAD;
+    constructor(sr, patch = PAD) {
+      this.sr = sr; this.p = patch;
       const coef = (s) => Math.pow(0.001, 1 / Math.max(1, sr * s));
-      this.attackStep = 1 / Math.max(1, sr * PAD.A);
-      this.decayCoef = coef(PAD.D); this.releaseCoef = coef(PAD.R);
-      this.hpfCoef = 1 - Math.exp(-2 * PI * (20 * Math.pow(2, PAD.hpf * 5.3)) / sr);
+      this.attackStep = 1 / Math.max(1, sr * patch.A);
+      this.decayCoef = coef(patch.D); this.releaseCoef = coef(patch.R);
+      this.hpfCoef = 1 - Math.exp(-2 * PI * (20 * Math.pow(2, patch.hpf * 5.3)) / sr);
       this.active = false; this.gateOn = false; this.env = 0; this.stage = IDLE;
       this.s1 = this.s2 = this.s3 = this.s4 = 0; this.hpLow = 0;
       this.phase = 0; this.subPhase = 0; this.inc = 0; this.note = -1; this.vel = 1; this.stamp = 0;
@@ -207,6 +214,7 @@ function TouchGrassEngine() {
       this.stage = ATTACK; this.active = true; this.gateOn = true; this.stamp = order;
     }
     noteOff() { if (!this.gateOn) return; this.gateOn = false; this.stage = RELEASE; }
+    setRelease(seconds) { this.releaseCoef = Math.pow(0.001, 1 / Math.max(1, this.sr * seconds)); }
     advance() {
       const p = this.p;
       switch (this.stage) {
@@ -429,6 +437,43 @@ function TouchGrassEngine() {
     }
   }
 
+  // Juno voices played from the strings: each note is a key held for a while
+  // (a third of the ring time), then let go to the release (the rest of it).
+  // How hard and how deep a finger plays opens the filter a little.
+  class JunoSection {
+    constructor(sr, voices) {
+      this.sr = sr;
+      this.voices = Array.from({ length: voices }, () => new JunoVoice(sr, CLOUD));
+      this.hold = new Float32Array(voices); this.cut = new Float32Array(voices);
+      this.lfoPhase = 0;
+    }
+    start(note, velocity, bright, holdSeconds, releaseSeconds, stamp) {
+      while (note < 48) note += 12;
+      while (note > 91) note -= 12;
+      const vs = this.voices;
+      let k = vs.findIndex((v) => v.active && v.note === note);
+      if (k < 0) k = vs.findIndex((v) => !v.active);
+      if (k < 0) { k = 0; for (let i = 1; i < vs.length; i++) if (vs[i].stamp < vs[k].stamp) k = i; }
+      vs[k].setRelease(releaseSeconds);
+      vs[k].noteOn(note, 0.55 + 0.45 * clamp(velocity, 0, 1), stamp);
+      this.hold[k] = holdSeconds * this.sr;
+      this.cut[k] = 0.30 + 0.22 * clamp(bright, 0, 1);
+    }
+    allOff() { for (const v of this.voices) v.noteOff(); }
+    process() {
+      this.lfoPhase += CLOUD.lfoRate / this.sr; if (this.lfoPhase >= 1) this.lfoPhase -= 1;
+      const lfo = Math.sin(2 * PI * this.lfoPhase);
+      let s = 0;
+      for (let k = 0; k < this.voices.length; k++) {
+        const v = this.voices[k];
+        if (!v.active) continue;
+        if (v.gateOn && --this.hold[k] <= 0) v.noteOff();
+        s += v.process(lfo, this.cut[k], 0.18, 1);
+      }
+      return s;
+    }
+  }
+
   // ---- the ney: a blown reed flute ------------------------------------------------
   // No free ney recordings exist with more than a note or two, so it is made:
   // a soft fundamental with a few weak overtones, breath noise tuned to the same
@@ -513,6 +558,8 @@ function TouchGrassEngine() {
       this.celloGain = 0.46;
       this.ney = new NeySection(sr, 10);
       this.neyGain = 0.5;
+      this.juno = new JunoSection(sr, 12);
+      this.junoGain = 1.7;
       this.plucks = Array.from({ length: pluckVoices }, () => new PluckVoice(sr));
       this.drone = Array.from({ length: 8 }, () => new JunoVoice(sr));
       this.ensemble = new Ensemble(sr);
@@ -553,7 +600,7 @@ function TouchGrassEngine() {
     setEnsembleMix(m) { this.ensemble.mix = clamp(m, 0, 1); }
     setMaster(g) { this.masterTarget = clamp(g, 0, 2); }
     setTone(t) { this.toneTarget = clamp(t, 0, 1); }
-    allOff() { this.pending.length = 0; this.cello.allOff(); this.ney.allOff(); for (const v of this.plucks) v.stopQuickly(); for (const v of this.drone) v.noteOff(); this.chord = null; }
+    allOff() { this.pending.length = 0; this.cello.allOff(); this.ney.allOff(); this.juno.allOff(); for (const v of this.plucks) v.stopQuickly(); for (const v of this.drone) v.noteOff(); this.chord = null; }
     activePlucks() { let n = 0; for (const v of this.plucks) if (v.active) n++; return n; }
 
     updateDecay() {
@@ -563,6 +610,11 @@ function TouchGrassEngine() {
     }
     startNote(note, vel, bright = 1) {
       if (note < 0 || note > 127) return;
+      if (VOICES[this.voiceIndex].synth) {
+        const hold = clamp(this.ringSeconds * 0.3, 0.25, 3);
+        this.juno.start(note, vel, bright, hold, clamp(this.ringSeconds * 0.5, 0.4, 8), ++this.stamp);
+        return;
+      }
       if (VOICES[this.voiceIndex].blown) {
         // a breath as long as a third of the ring time asks
         this.ney.start(note, vel, bright, clamp(this.ringSeconds * 0.3, 0.3, 3), ++this.stamp);
@@ -618,6 +670,7 @@ function TouchGrassEngine() {
         for (const v of this.plucks) if (v.active) strings += v.process();
         strings += this.cello.process() * this.celloGain;
         strings += this.ney.process() * this.neyGain;
+        strings += this.juno.process() * this.junoGain;
 
         this.tone += (this.toneTarget - this.tone) * 0.002;
         if ((this.toneTick++ & 15) === 0) {
