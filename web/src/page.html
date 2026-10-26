@@ -123,6 +123,8 @@ body {
 .chord-row button, .row-buttons button { font-size: 0.8rem; padding: 7px 11px; }
 .chord-row button:disabled, .row-buttons button:disabled { opacity: 0.35; cursor: default; }
 .row-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.scene-pick { font-size: 0.95rem; padding: 9px 18px; }
+.scene-pick[aria-pressed="true"] { background: var(--pollen); color: var(--dusk); border-color: var(--pollen); }
 @media (prefers-reduced-motion: reduce) { #start, #hint { transition: none; } }
 </style>
 
@@ -130,6 +132,7 @@ body {
 <div id="plates"></div>
 <div id="controls" hidden>
   <button class="chip" id="settings-open" type="button">Inställningar</button>
+  <button class="chip" id="scene-next" type="button">Scen: Äng</button>
   <button class="chip" id="view" type="button">Vy: Ovanifrån</button>
   <button class="chip" id="clock" type="button">Tid 15:00</button>
   <div id="timerow" hidden>
@@ -143,6 +146,10 @@ body {
       <h2 id="settings-title">Inställningar</h2>
       <button class="chip" id="settings-done" type="button">Klar</button>
     </header>
+    <section>
+      <h3>Scen</h3>
+      <div class="row-buttons" id="scene-picks"></div>
+    </section>
     <section>
       <h3>Strängar</h3>
       <div class="setting"><label for="voice">Ljud</label><select id="voice" class="pick"></select></div>
@@ -168,7 +175,7 @@ body {
 <div id="start">
   <div class="start-card">
     <h1>Touch Grass</h1>
-    <p>Dra fingrarna över ängen. Höjden på skärmen väljer ackord, i sidled knäpper du strängarna. Låt fingret ligga kvar så sjunker det djupare i gräset och klangen ljusnar.</p>
+    <p>Dra fingrarna över ytan. Höjden på skärmen väljer ackord, i sidled knäpper du strängarna och ett tryck slår an en sträng. Låt fingret ligga kvar så ljusnar klangen.</p>
     <button id="begin" type="button">Börja</button>
     <span class="note" id="chordline">G · D · A · Em, uppifrån och ner</span>
   </div>
@@ -199,11 +206,18 @@ const chordName = (r, q) => NOTE_NAMES[r] + KINDS[q][0];
 
 const settings = (() => {
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));   // the page's clamp is defined further down
-  const s = { chords: DEFAULT_CHORDS.map((c) => c.slice()), voice: 1, ring: 3.5, drone: true, droneLevel: 0.35, droneBright: 0.42 };
+  const s = { scene: "meadow", sound: {}, chords: DEFAULT_CHORDS.map((c) => c.slice()), voice: 1, ring: 3.5, drone: true, droneLevel: 0.35, droneBright: 0.42 };
   try {
     const saved = JSON.parse(localStorage.getItem("touchgrass.settings") || "null");
     if (saved && Array.isArray(saved.chords) && saved.chords.length >= 1) {
       s.chords = saved.chords.slice(0, MAX_PLATES).map(([r, q]) => [clamp(r | 0, 0, 11), clamp(q | 0, 0, 4)]);
+    }
+    if (saved && typeof saved.scene === "string") s.scene = saved.scene;
+    if (saved && saved.sound && typeof saved.sound === "object") {
+      for (const id in saved.sound) {
+        const v = saved.sound[id];
+        if (v && Number.isInteger(v.voice) && Number.isFinite(v.ring)) s.sound[id] = { voice: clamp(v.voice, 0, 3), ring: clamp(v.ring, 0.8, 10) };
+      }
     }
     if (saved && Number.isInteger(saved.voice)) s.voice = clamp(saved.voice, 0, 3);
     if (saved && Number.isFinite(saved.ring)) s.ring = clamp(saved.ring, 0.8, 10);
@@ -308,48 +322,8 @@ function target(size) {
   });
 }
 
-// Where the grass has been touched. Never cleared: each frame every texel is
-// pulled back toward rest (at least one 8-bit step, so it cannot stall where
-// half floats are missing), then the fingers are stamped on top. So the
-// blades part round a finger and the wake behind it closes over seconds.
 const MAX_TOUCH = 10;
-let bendA = target(384), bendB = target(384);
-const bendMat = new THREE.ShaderMaterial({
-  vertexShader: PASS_VERT,
-  uniforms: {
-    uPrev: { value: null }, uDecay: { value: 0.02 }, uCount: { value: 0 },
-    uTouch: { value: Array.from({ length: MAX_TOUCH }, () => new THREE.Vector4()) },
-    uDrag: { value: Array.from({ length: MAX_TOUCH }, () => new THREE.Vector4()) },
-    uRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
-    uInit: { value: 1 },
-  },
-  fragmentShader: `
-    uniform sampler2D uPrev; uniform float uDecay; uniform int uCount; uniform float uInit;
-    uniform vec4 uTouch[${MAX_TOUCH}]; uniform vec4 uDrag[${MAX_TOUCH}]; uniform vec3 uRect;
-    varying vec2 vUv;
-    void main() {
-      vec3 rest = vec3(0.5, 0.5, 0.0);
-      vec3 c = mix(texture2D(uPrev, vUv).rgb, rest, uInit);
-      vec3 d = c - rest;
-      vec3 back = d * uDecay;
-      vec3 minStep = sign(d) * min(abs(d), vec3(1.2 / 255.0));
-      c -= mix(minStep, back, step(abs(minStep), abs(back)));
-      vec2 w = uRect.xy + vUv * uRect.z;
-      for (int i = 0; i < ${MAX_TOUCH}; i++) {
-        if (i >= uCount) break;
-        vec2 o = w - uTouch[i].xy;
-        float dist = length(o);
-        float r = dist / uTouch[i].z;
-        float fall = 1.0 - smoothstep(0.0, 1.0, r);
-        if (fall <= 0.0) continue;
-        vec2 radial = dist > 1e-3 ? o / dist : vec2(0.0);
-        vec2 push = clamp(radial * smoothstep(0.0, 0.4, r) * 0.75 + uDrag[i].xy * 0.7, -1.0, 1.0);
-        vec3 stamp = vec3(0.5 + 0.5 * push, uTouch[i].w * fall);
-        c = mix(c, stamp, fall * uDrag[i].z);
-      }
-      gl_FragColor = vec4(c, 1.0);
-    }`,
-});
+
 
 // Rings from plucked strings, drawn fresh each frame: rgb their light,
 // a how hard they bow the blades as they pass.
@@ -380,19 +354,7 @@ const rippleMat = new THREE.ShaderMaterial({
     }`,
 });
 
-// ---- the meadow --------------------------------------------------------------
-const COMMON_GLSL = `
-  uniform sampler2D uNoise;
-  float dryAt(vec2 xz) { return smoothstep(0.42, 0.66, texture2D(uNoise, xz / 64.0).r); }
-  float lushAt(vec2 xz) { return texture2D(uNoise, xz / 64.0 + vec2(0.37, 0.11)).g; }
-  vec3 grassLow(vec2 xz) { return mix(vec3(0.018, 0.05, 0.010), vec3(0.11, 0.09, 0.03), dryAt(xz)); }
-  vec3 grassHigh(vec2 xz) {
-    vec3 green = mix(vec3(0.20, 0.36, 0.03), vec3(0.36, 0.48, 0.045), lushAt(xz));
-    return mix(green, vec3(0.56, 0.44, 0.11), dryAt(xz));
-  }
-  vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
-`;
-
+// ---- light, shared by every scene ------------------------------------------
 const lightUniforms = {
   uSunDir: { value: new THREE.Vector3(0.3, 0.8, -0.5).normalize() },
   uSunCol: { value: new THREE.Color(1, 0.9, 0.75) },
@@ -402,200 +364,7 @@ const lightUniforms = {
   uWarm: { value: 0.3 },
 };
 
-const grassUniforms = Object.assign({
-  uNoise: { value: noiseTex },
-  uBend: { value: bendA.texture },
-  uRipple: { value: rippleRT.texture },
-  uRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
-  uSpacing: { value: 0.08 }, uWidthScale: { value: 1 }, uFieldMin: { value: new THREE.Vector2() },
-  uTime: { value: 0 }, uWindDir: { value: new THREE.Vector2(0.8, -0.6).normalize() },
-  uWind: { value: 0.45 }, uGustSpeed: { value: 5.0 },
-  uMusic: { value: new THREE.Vector3() },
-}, lightUniforms);
 
-const grassMat = new THREE.ShaderMaterial({
-  uniforms: grassUniforms,
-  side: THREE.DoubleSide,
-  vertexShader: `
-    attribute vec2 aCell;
-    uniform sampler2D uBend; uniform sampler2D uRipple; uniform vec3 uRect;
-    uniform float uSpacing, uWidthScale, uTime, uWind, uGustSpeed;
-    uniform vec2 uFieldMin, uWindDir; uniform vec3 uMusic;
-    varying float vT; varying float vGust; varying vec3 vLow; varying vec3 vHigh;
-    varying vec3 vGlow; varying vec3 vN; varying vec3 vWorld; varying float vSparkle;
-    ${COMMON_GLSL}
-    vec4 hash42(vec2 p) {
-      vec4 p4 = fract(vec4(p.xyxy) * vec4(0.1031, 0.1030, 0.0973, 0.1099));
-      p4 += dot(p4, p4.wzxy + 33.33);
-      return fract((p4.xxyz + p4.yzzw) * p4.zywx);
-    }
-    void main() {
-      vec4 h = hash42(aCell + 17.0);
-      vec4 h2 = hash42(aCell * 1.618 + 3.0);
-      vec2 root = uFieldMin + (aCell + h.xy) * uSpacing;
-      float lush = lushAt(root);
-      float L = mix(0.42, 1.0, lush) * (0.7 + 0.6 * h.z);
-      float yaw = h.w * 6.2831853;
-      vec2 face = vec2(cos(yaw), sin(yaw));
-      float yaw2 = h2.x * 6.2831853;
-      vec2 droop = vec2(cos(yaw2), sin(yaw2)) * mix(0.12, 0.6, h.z * h.z);
-
-      vec2 wd = uWindDir, wp = vec2(-wd.y, wd.x);
-      vec2 q = root - wd * uTime * uGustSpeed;
-      float n = texture2D(uNoise, q / 100.0).a * 0.65 + texture2D(uNoise, q / 32.0 + vec2(0.3, 0.7)).a * 0.35;
-      float g = clamp(smoothstep(0.45, 0.78, n) + uMusic.x * 0.5, 0.0, 1.0);
-      float ph = h2.y * 6.2831853;
-      float flutter = sin(uTime * (2.2 + h.z * 1.6) + ph + dot(root, wd) * 1.3);
-      float flutter2 = sin(uTime * (3.1 + h.z) + ph * 1.7);
-      vec2 v = droop + wd * uWind * (0.25 + 1.25 * g) + wd * flutter * 0.07 * (0.4 + g) + wp * flutter2 * 0.05;
-
-      vec2 buv = (root - uRect.xy) / uRect.z;
-      float inside = step(0.0, buv.x) * step(buv.x, 1.0) * step(0.0, buv.y) * step(buv.y, 1.0);
-      vec4 b = texture2D(uBend, buv);
-      vec2 push = (b.rg - 0.5) * 2.0 * inside;
-      float press = clamp(b.b, 0.0, 1.0) * inside;
-      vec4 rp = texture2D(uRipple, buv) * inside;
-      v = v * (1.0 - 0.6 * min(length(push), 1.0)) + push * 1.5;
-      float vl = max(length(v), 1e-4);
-      float a = min(vl + press * 0.9 + rp.a * 0.7, 1.5);
-      vec2 dir = v / vl;
-
-      float t = position.y, s = position.x;
-      vec3 hd = vec3(dir.x, 0.0, dir.y);
-      vec3 P1 = hd * sin(a) * L * 0.18 + vec3(0.0, L * 0.55, 0.0);
-      vec3 P2 = hd * sin(a) * L + vec3(0.0, cos(a) * L, 0.0);
-      vec3 pos = 2.0 * (1.0 - t) * t * P1 + t * t * P2;
-      vec3 tng = normalize(2.0 * (1.0 - t) * P1 + 2.0 * t * (P2 - P1) + vec3(0.0, 1e-4, 0.0));
-      vec3 side = vec3(face.x, 0.0, face.y);
-      float w = uSpacing * 0.75 * uWidthScale * (0.75 + 0.5 * h2.z);
-      pos += side * s * w * pow(1.0 - t, 0.6);
-      vN = normalize(mix(normalize(cross(side, tng)), vec3(0.0, 1.0, 0.0), 0.6));
-      vec3 world = vec3(root.x, -0.02, root.y) + pos;
-      vWorld = world;
-      vT = t; vGust = g;
-      vLow = grassLow(root);
-      vHigh = grassHigh(root) * (0.85 + 0.3 * h2.w);
-      vGlow = rp.rgb;
-      vSparkle = uMusic.z * step(0.93, fract(h.z * 37.0 + uTime * 0.7));
-      gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
-    }`,
-  fragmentShader: `
-    uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity, uWarm;
-    varying float vT; varying float vGust; varying vec3 vLow; varying vec3 vHigh;
-    varying vec3 vGlow; varying vec3 vN; varying vec3 vWorld; varying float vSparkle;
-    vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
-    void main() {
-      vec3 col = mix(vLow, vHigh, smoothstep(0.0, 0.85, vT));
-      col *= mix(0.35, 1.0, smoothstep(0.0, 0.55, vT));
-      col *= 1.0 + vGust * 0.28 * vT;
-      col = mix(col, col * vec3(1.15, 1.0, 0.7), uWarm * vT);
-      vec3 n = normalize(gl_FrontFacing ? vN : vN);
-      float lam = max(dot(n, uSunDir), 0.0) * 0.6 + 0.4;
-      vec3 lit = col * (uAmbient + uSunCol * lam * 1.4) + col * uSunCol * 0.3 * vT;
-      lit += vGlow * vT * vT * 0.55 + vec3(1.0, 0.95, 0.8) * vSparkle * vT * vT * 0.8;
-      float fog = 1.0 - exp(-uFogDensity * length(vWorld - cameraPosition));
-      lit = mix(lit, uFogCol, fog);
-      gl_FragColor = vec4(pow(tonemap(lit), vec3(1.0 / 2.2)), 1.0);
-    }`,
-});
-
-const groundMat = new THREE.ShaderMaterial({
-  uniforms: Object.assign({ uNoise: { value: noiseTex }, uFieldMin: grassUniforms.uFieldMin, uFieldMax: { value: new THREE.Vector2() } }, lightUniforms),
-  vertexShader: "varying vec3 vWorld; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }",
-  fragmentShader: `
-    uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity; uniform vec2 uFieldMin, uFieldMax;
-    varying vec3 vWorld;
-    ${COMMON_GLSL}
-    void main() {
-      vec2 xz = vWorld.xz;
-      float n = texture2D(uNoise, xz / 9.0).b;
-      vec3 low = grassLow(xz) * (0.8 + 0.4 * n);
-      // past the blades the ground takes the colour of their tips
-      vec2 outside = max(uFieldMin - xz, xz - uFieldMax);
-      float far = smoothstep(-1.0, 3.0, max(outside.x, outside.y));
-      vec3 c = mix(low, grassHigh(xz) * 0.6, far);
-      vec3 lit = c * (uAmbient + uSunCol * (max(uSunDir.y, 0.0) * 0.6 + 0.4) * 1.6);
-      float fog = 1.0 - exp(-uFogDensity * length(vWorld - cameraPosition));
-      gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
-    }`,
-});
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), groundMat);
-ground.rotation.x = -Math.PI / 2;
-scene.add(ground);
-
-// One blade: a strip from root (y 0) to tip (y 1), x -0.5..0.5 across.
-function bladeGeometry(segments) {
-  const pos = [], idx = [];
-  for (let k = 0; k < segments; k++) { const t = k / segments; pos.push(-0.5, t, 0, 0.5, t, 0); }
-  pos.push(0, 1, 0);
-  for (let k = 0; k < segments - 1; k++) { const a = k * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
-  const last = (segments - 1) * 2;
-  idx.push(last, segments * 2, last + 1);
-  const g = new THREE.InstancedBufferGeometry();
-  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-  g.setIndex(idx);
-  return g;
-}
-
-// The field: a grid of cells covering what every view sees, in a shuffled
-// order, so drawing fewer blades thins the whole meadow evenly. Blades widen
-// as they thin so the meadow stays full.
-const MAX_BLADES = 150000;
-let budget = 70000;
-const bladeGeo = bladeGeometry(4);
-const blades = new THREE.Mesh(bladeGeo, grassMat);
-blades.frustumCulled = false;
-scene.add(blades);
-let fieldArea = 1;
-
-function footprint(view, aspect) {
-  const cam = new THREE.PerspectiveCamera(view.fov, aspect, 0.1, 100);
-  cam.position.set(...view.pos); cam.lookAt(...view.look); cam.updateMatrixWorld(); cam.updateProjectionMatrix();
-  const pts = [];
-  for (const [x, y] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-    const p = new THREE.Vector3(x, y, 0.5).unproject(cam).sub(cam.position).normalize();
-    const t = p.y < -0.05 ? -cam.position.y / p.y : 40;
-    const hit = cam.position.clone().addScaledVector(p, Math.min(t, 40));
-    pts.push([clamp(hit.x, -FIELD_LIMIT, FIELD_LIMIT), clamp(hit.z, -FIELD_LIMIT, FIELD_LIMIT)]);
-  }
-  return pts;
-}
-
-function buildField() {
-  const aspect = window.innerWidth / Math.max(1, window.innerHeight);
-  let minX = 1e9, minZ = 1e9, maxX = -1e9, maxZ = -1e9;
-  for (const v of VIEWS) for (const [x, z] of footprint(v, aspect)) {
-    minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
-  }
-  minX -= 1.5; minZ -= 1.5; maxX += 1.5; maxZ += 1.5;
-  const w = maxX - minX, d = maxZ - minZ;
-  fieldArea = w * d;
-  const spacing = Math.sqrt(fieldArea / MAX_BLADES);
-  const nx = Math.ceil(w / spacing), nz = Math.ceil(d / spacing);
-  const n = nx * nz;
-  const cells = new Float32Array(n * 2);
-  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const k = (j * nx + i) * 2; cells[k] = i; cells[k + 1] = j; }
-  let s = 12345;
-  for (let k = n - 1; k > 0; k--) {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    const r = s % (k + 1);
-    const ax = cells[2 * k], az = cells[2 * k + 1];
-    cells[2 * k] = cells[2 * r]; cells[2 * k + 1] = cells[2 * r + 1];
-    cells[2 * r] = ax; cells[2 * r + 1] = az;
-  }
-  bladeGeo.setAttribute("aCell", new THREE.InstancedBufferAttribute(cells, 2));
-  grassUniforms.uSpacing.value = spacing;
-  grassUniforms.uFieldMin.value.set(minX, minZ);
-  groundMat.uniforms.uFieldMax.value.set(maxX, maxZ);
-  bladeGeo.maxCells = n;
-  setBudget(budget);
-}
-
-function setBudget(b) {
-  budget = clamp(Math.round(b), 15000, Math.min(MAX_BLADES, bladeGeo.maxCells || MAX_BLADES));
-  bladeGeo.instanceCount = budget;
-  grassUniforms.uWidthScale.value = Math.sqrt(MAX_BLADES / budget) * 0.9;
-}
 
 // ---- touch glow and pollen ----------------------------------------------------
 function dotTexture() {
@@ -613,6 +382,7 @@ const POLLEN = 360;
 const pollenGeo = new THREE.BufferGeometry();
 const pPos = new Float32Array(POLLEN * 3), pCol = new Float32Array(POLLEN * 3);
 const pVel = new Float32Array(POLLEN * 3), pLife = new Float32Array(POLLEN);
+const pGrav = new Float32Array(POLLEN), pDrag = new Float32Array(POLLEN);
 for (let i = 0; i < POLLEN; i++) pPos[i * 3 + 1] = -100;
 pollenGeo.setAttribute("position", new THREE.BufferAttribute(pPos, 3));
 pollenGeo.setAttribute("color", new THREE.BufferAttribute(pCol, 3));
@@ -624,15 +394,29 @@ pollen.frustumCulled = false;
 scene.add(pollen);
 let pollenNext = 0;
 
-function burst(at, rgb, strength) {
-  for (let k = 0; k < 14; k++) {
+// kind "pollen": light motes that drift up and away on the breeze.
+// kind "splash": droplets thrown up from water that fall back and vanish into it.
+function burst(at, rgb, strength, kind = "pollen") {
+  const splash = kind === "splash";
+  const count = splash ? 22 : 14;
+  for (let k = 0; k < count; k++) {
     const i = pollenNext; pollenNext = (pollenNext + 1) % POLLEN;
-    const a = Math.random() * Math.PI * 2, r = Math.random() * 0.25;
-    pPos[i * 3] = at.x + Math.cos(a) * r; pPos[i * 3 + 1] = GRASS_TOP + Math.random() * 0.2; pPos[i * 3 + 2] = at.z + Math.sin(a) * r;
-    pVel[i * 3] = Math.cos(a) * 0.3 * Math.random(); pVel[i * 3 + 1] = 0.25 + 0.5 * Math.random() * strength; pVel[i * 3 + 2] = Math.sin(a) * 0.3 * Math.random();
-    pLife[i] = 1.6 + Math.random() * 0.8;
-    const m = 0.6 + 0.4 * Math.random();
-    pCol[i * 3] = lerp(rgb[0], 1, 0.4) * m; pCol[i * 3 + 1] = lerp(rgb[1], 1, 0.4) * m; pCol[i * 3 + 2] = lerp(rgb[2], 0.9, 0.4) * m;
+    const a = Math.random() * Math.PI * 2, r = Math.random() * (splash ? 0.12 : 0.25);
+    pPos[i * 3] = at.x + Math.cos(a) * r; pPos[i * 3 + 2] = at.z + Math.sin(a) * r;
+    if (splash) {
+      const out = (0.3 + 0.9 * Math.random()) * (0.5 + strength);
+      pPos[i * 3 + 1] = at.y + 0.02;
+      pVel[i * 3] = Math.cos(a) * out; pVel[i * 3 + 1] = 1.2 + 1.8 * Math.random() * (0.4 + strength); pVel[i * 3 + 2] = Math.sin(a) * out;
+      pLife[i] = 0.9 + Math.random() * 0.6; pGrav[i] = -7.5; pDrag[i] = 0.15;
+      const m = 0.8 + 0.2 * Math.random();
+      pCol[i * 3] = lerp(rgb[0], 1, 0.75) * m; pCol[i * 3 + 1] = lerp(rgb[1], 1, 0.75) * m; pCol[i * 3 + 2] = lerp(rgb[2], 1, 0.8) * m;
+    } else {
+      pPos[i * 3 + 1] = at.y + 0.1 + Math.random() * 0.2;
+      pVel[i * 3] = Math.cos(a) * 0.3 * Math.random(); pVel[i * 3 + 1] = 0.25 + 0.5 * Math.random() * strength; pVel[i * 3 + 2] = Math.sin(a) * 0.3 * Math.random();
+      pLife[i] = 1.6 + Math.random() * 0.8; pGrav[i] = 0.05; pDrag[i] = 0.5;
+      const m = 0.6 + 0.4 * Math.random();
+      pCol[i * 3] = lerp(rgb[0], 1, 0.4) * m; pCol[i * 3 + 1] = lerp(rgb[1], 1, 0.4) * m; pCol[i * 3 + 2] = lerp(rgb[2], 0.9, 0.4) * m;
+    }
   }
 }
 
@@ -641,11 +425,14 @@ function stepPollen(dt) {
     if (pLife[i] <= 0) continue;
     pLife[i] -= dt;
     const k = i * 3;
-    pVel[k] += 0.15 * dt; pVel[k + 1] += 0.05 * dt; pVel[k + 2] -= 0.08 * dt;
-    pVel[k] *= 1 - 0.5 * dt; pVel[k + 1] *= 1 - 0.5 * dt; pVel[k + 2] *= 1 - 0.5 * dt;
+    const drift = pGrav[i] > 0 ? 1 : 0;                 // only pollen rides the breeze
+    pVel[k] += 0.15 * dt * drift; pVel[k + 1] += pGrav[i] * dt; pVel[k + 2] -= 0.08 * dt * drift;
+    const drag = 1 - pDrag[i] * dt;
+    pVel[k] *= drag; pVel[k + 1] *= drag; pVel[k + 2] *= drag;
     pPos[k] += pVel[k] * dt; pPos[k + 1] += pVel[k + 1] * dt; pPos[k + 2] += pVel[k + 2] * dt;
     const fade = Math.min(1, pLife[i] / 0.8);
     pCol[k] *= fade > 0.999 ? 1 : 0.985; pCol[k + 1] *= fade > 0.999 ? 1 : 0.985; pCol[k + 2] *= fade > 0.999 ? 1 : 0.985;
+    if (pGrav[i] < 0 && pVel[k + 1] < 0 && pPos[k + 1] < -0.02) pLife[i] = 0;   // a droplet back in the water
     if (pLife[i] <= 0) pPos[k + 1] = -100;
   }
   pollenGeo.attributes.position.needsUpdate = true;
@@ -654,8 +441,44 @@ function stepPollen(dt) {
 
 const glowMat = new THREE.SpriteMaterial({ map: dotTex, color: 0xfff1cf, transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending, opacity: 0.0 });
 
+// ---- the scenes ------------------------------------------------------------------
+/*SCENES*/
+
+const SCENES = [meadowScene, waterScene];
+let activeScene = meadowScene;
+
+// Switch scene: its surface replaces the last one, fingers meet it at its
+// height, and its sound (strings, ring time, room) comes in. A sound the player
+// changed in a scene is remembered for that scene.
+function setScene(id) {
+  const next = SCENES.find((sc) => sc.id === id) || meadowScene;
+  if (activeScene !== next) { scene.remove(activeScene.group); activeScene.exit(); }
+  activeScene = next;
+  if (!next.group.parent) scene.add(next.group);
+  next.enter();
+  next.resize();
+  plane.constant = -next.touchHeight;
+  settings.scene = next.id;
+  const snd = settings.sound[next.id] || next.sound;
+  settings.voice = snd.voice;
+  settings.ring = snd.ring;
+  if (wetGain) wetGain.gain.setTargetAtTime(next.sound.wet, ctx.currentTime, 0.4);
+  if (ctx) sendStrings();
+  syncSoundControls();
+  document.querySelectorAll(".scene-pick").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.scene === next.id)));
+  const chip = document.getElementById("scene-next");
+  if (chip) chip.textContent = "Scen: " + next.name;
+  saveSettings();
+}
+function syncSoundControls() {
+  const v = document.getElementById("voice"), r = document.getElementById("ring");
+  if (v && v.options.length) v.value = String(settings.voice);
+  if (r) r.value = settings.ring;
+}
+function rememberSound() { settings.sound[activeScene.id] = { voice: settings.voice, ring: settings.ring }; }
+
 // ---- sound ---------------------------------------------------------------------
-let ctx = null, node = null, mainEngine = null, analyser = null, freqData = null;
+let ctx = null, node = null, mainEngine = null, analyser = null, freqData = null, wetGain = null;
 const music = new THREE.Vector3();
 
 function post(c) {
@@ -708,7 +531,8 @@ async function startAudio() {
   }
   const master = ctx.createGain(); master.gain.value = 1.0;
   const dry = ctx.createGain(); dry.gain.value = 0.9;
-  const wet = ctx.createGain(); wet.gain.value = 0.32;
+  const wet = ctx.createGain(); wet.gain.value = activeScene.sound.wet;
+  wetGain = wet;
   const reverb = ctx.createConvolver(); reverb.buffer = impulse(ctx, 3.2);
   source.connect(dry).connect(master);
   source.connect(reverb).connect(wet).connect(master);
@@ -737,7 +561,6 @@ function listenToMusic(dt) {
     const rate = now > music[key] ? 0.08 : 0.6;
     music[key] = lerp(music[key], now, 1 - Math.exp(-dt / rate));
   }
-  grassUniforms.uMusic.value.copy(music);
 }
 
 // ---- fingers on the plates ----------------------------------------------------
@@ -768,7 +591,7 @@ function newFinger(id) {
 }
 
 const ray = new THREE.Raycaster();
-const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -GRASS_TOP * 0.8);
+const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -GRASS_TOP * 0.8);   // setScene moves it to the scene's surface
 function worldAt(sx, sy, out) {
   ray.setFromCamera(new THREE.Vector2(sx * 2 - 1, 1 - sy * 2), camera);
   return ray.ray.intersectPlane(plane, out);
@@ -826,7 +649,7 @@ function pluckString(f, k) {
 
 function onPluck(f, vel) {
   const col = PLATE_COLORS[f.plate];
-  burst(f.world, col, vel);
+  activeScene.pluck(f, col, vel);
   ripples.push({ x: f.world.x, z: f.world.z, age: 0, strength: vel, col });
   if (ripples.length > MAX_RIPPLE) ripples.shift();
   plateGlow[f.plate] = 1;
@@ -855,6 +678,7 @@ canvas.addEventListener("pointerdown", (e) => {
   worldAt(sx, sy, f.world);
   fingers.set(e.pointerId, f);
   strum(f, sx, sy, e.timeStamp, true);
+  activeScene.tap(f);
   e.preventDefault();
 });
 canvas.addEventListener("pointermove", (e) => {
@@ -990,21 +814,19 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / Math.max(1, h);
   camera.updateProjectionMatrix();
-  buildField();
+  for (const sc of SCENES) sc.resize();
 }
 window.addEventListener("resize", resize);
 
 // ---- the frame ---------------------------------------------------------------------
 let started = false, last = performance.now(), clockTime = 0;
 let deepestDepth = 0;
-let fpsTime = 0, fpsFrames = 0, tuned = 0;
-const bendTouch = bendMat.uniforms.uTouch.value, bendDrag = bendMat.uniforms.uDrag.value;
+let fpsTime = 0, fpsFrames = 0;
 
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   clockTime += dt;
-  grassUniforms.uTime.value = clockTime;
   placeCamera(dt, clockTime);
 
   // each finger sinks the longer it stays down
@@ -1016,35 +838,27 @@ function frame(now) {
   }
   deepestDepth = deepest;
 
-  // stamp the fingers into the bend field
-  let n = 0;
+  // hand the fingers to the scene; each finger's glow sits on its surface
+  const touches = [];
   const viewScale = clamp(camera.position.y / 11, 0.6, 1.6);
   for (const f of fingers.values()) {
-    if (n >= MAX_TOUCH) break;
     const sp = f.vel.length();
-    const drag = sp > 1e-3 ? f.vel.clone().multiplyScalar(clamp(sp / 3, 0, 1) / sp) : new THREE.Vector2();
-    bendTouch[n].set(f.world.x, f.world.z, (0.5 + 0.35 * depthFor(f)) * viewScale, 0.15 + 0.85 * depthFor(f));
-    bendDrag[n].set(drag.x, drag.y, 0.45, 0);
+    const k = sp > 1e-3 ? clamp(sp / 3, 0, 1) / sp : 0;
+    touches.push({ x: f.world.x, z: f.world.z, radius: (0.5 + 0.35 * depthFor(f)) * viewScale,
+                   press: 0.15 + 0.85 * depthFor(f), dx: f.vel.x * k, dz: f.vel.y * k, strength: 0.45,
+                   speed: sp, depth: depthFor(f), finger: f });
     f.vel.multiplyScalar(Math.exp(-dt / 0.15));
-    f.sprite.position.set(f.world.x, GRASS_TOP + 0.15, f.world.z);
+    f.sprite.position.set(f.world.x, activeScene.glowHeight, f.world.z);
     f.sprite.material.opacity = lerp(f.sprite.material.opacity, 0.25 + 0.6 * depthFor(f), 0.2);
     f.sprite.scale.setScalar((0.6 + 1.1 * depthFor(f)) * viewScale);
-    n++;
   }
-  bendMat.uniforms.uCount.value = n;
   for (let i = leaving.length - 1; i >= 0; i--) {
     const f = leaving[i];
     f.sprite.material.opacity *= Math.exp(-dt / 0.2);
     if (f.sprite.material.opacity < 0.01) { scene.remove(f.sprite); f.sprite.material.dispose(); leaving.splice(i, 1); }
   }
-  bendMat.uniforms.uDecay.value = 1 - Math.exp(-dt / 2.6);
-  bendMat.uniforms.uPrev.value = bendA.texture;
-  passQuad.material = bendMat;
-  renderer.setRenderTarget(bendB);
-  renderer.render(passScene, passCam);
-  bendMat.uniforms.uInit.value = 0;
-  [bendA, bendB] = [bendB, bendA];
-  grassUniforms.uBend.value = bendA.texture;
+  listenToMusic(dt);
+  activeScene.update(dt, touches, clockTime);
 
   // ripples
   const rings = rippleMat.uniforms.uRings.value, cols = rippleMat.uniforms.uColors.value;
@@ -1060,7 +874,6 @@ function frame(now) {
   renderer.setRenderTarget(null);
 
   stepPollen(dt);
-  listenToMusic(dt);
 
   for (let k = 0; k < CHORDS.length; k++) {
     let want = 0;
@@ -1081,11 +894,8 @@ function frame(now) {
   fpsTime += dt; fpsFrames++;
   if (fpsTime > 2.5) {
     const fps = fpsFrames / fpsTime;
-    if (tuned < 6) {
-      if (fps < 42) { setBudget(budget * 0.7); tuned++; }
-      else if (fps > 57 && budget < MAX_BLADES) { setBudget(budget * 1.25); tuned++; }
-    }
-    window.__tg = { fps: Math.round(fps), blades: budget, worklet: !!node, floatTargets, depth: +deepestDepth.toFixed(2) };
+    activeScene.tune(fps);
+    window.__tg = { fps: Math.round(fps), scene: activeScene.id, ...activeScene.stats(), worklet: !!node, floatTargets, depth: +deepestDepth.toFixed(2) };
     fpsTime = 0; fpsFrames = 0;
   }
   requestAnimationFrame(frame);
@@ -1099,7 +909,7 @@ $("begin").addEventListener("click", async () => {
   try { await startAudio(); } catch (e) { showError("Ljudet kunde inte starta: " + e.message); }
   try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (e) {}
   const hint = $("hint");
-  hint.textContent = "Dra i sidled · höjden byter ackord · låt fingret ligga kvar för djupare klang";
+  hint.textContent = "Dra i sidled · tryck för en ton · höjden byter ackord";
   hint.hidden = false;
   setTimeout(() => { hint.style.opacity = "0"; }, 6500);
 });
@@ -1182,9 +992,9 @@ VOICE_NAMES.forEach((name, i) => $("voice").add(new Option(name, i, false, i ===
 $("ring").value = settings.ring;
 $("voice").addEventListener("change", (e) => {
   settings.voice = parseInt(e.target.value, 10);
-  saveSettings(); sendStrings(); previewPlate(dronePlate >= 0 ? dronePlate : middlePlate());
+  rememberSound(); saveSettings(); sendStrings(); previewPlate(dronePlate >= 0 ? dronePlate : middlePlate());
 });
-$("ring").addEventListener("input", (e) => { settings.ring = parseFloat(e.target.value); saveSettings(); sendStrings(); });
+$("ring").addEventListener("input", (e) => { settings.ring = parseFloat(e.target.value); rememberSound(); saveSettings(); sendStrings(); });
 $("ring").addEventListener("change", () => previewPlate(dronePlate >= 0 ? dronePlate : middlePlate()));
 $("drone-on").checked = settings.drone;
 $("drone-level").value = settings.droneLevel;
@@ -1193,12 +1003,21 @@ $("drone-on").addEventListener("change", (e) => { settings.drone = e.target.chec
 $("drone-level").addEventListener("input", (e) => { settings.droneLevel = parseFloat(e.target.value); if (!settings.drone && settings.droneLevel > 0) { settings.drone = true; $("drone-on").checked = true; } saveSettings(); sendDrone(); });
 $("drone-bright").addEventListener("input", (e) => { settings.droneBright = parseFloat(e.target.value); saveSettings(); sendDrone(); });
 
+for (const sc of SCENES) {
+  const b = document.createElement("button");
+  b.className = "chip scene-pick"; b.type = "button"; b.textContent = sc.name; b.dataset.scene = sc.id;
+  b.addEventListener("click", () => setScene(sc.id));
+  $("scene-picks").appendChild(b);
+}
+
+$("scene-next").addEventListener("click", () => setScene(SCENES[(SCENES.indexOf(activeScene) + 1) % SCENES.length].id));
 $("view").addEventListener("click", () => goToView(viewIndex + 1, false));
 $("clock").addEventListener("click", () => { $("timerow").hidden = !$("timerow").hidden; });
 $("hour").addEventListener("input", (e) => applyHour(parseFloat(e.target.value)));
 
 goToView(0, true);
 applyHour(15);
+setScene(settings.scene);
 resize();
 requestAnimationFrame((t) => { last = t; frame(t); });
 </script>

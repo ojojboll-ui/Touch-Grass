@@ -124,6 +124,8 @@ body {
 .chord-row button, .row-buttons button { font-size: 0.8rem; padding: 7px 11px; }
 .chord-row button:disabled, .row-buttons button:disabled { opacity: 0.35; cursor: default; }
 .row-buttons { display: flex; flex-wrap: wrap; gap: 8px; }
+.scene-pick { font-size: 0.95rem; padding: 9px 18px; }
+.scene-pick[aria-pressed="true"] { background: var(--pollen); color: var(--dusk); border-color: var(--pollen); }
 @media (prefers-reduced-motion: reduce) { #start, #hint { transition: none; } }
 </style>
 
@@ -131,6 +133,7 @@ body {
 <div id="plates"></div>
 <div id="controls" hidden>
   <button class="chip" id="settings-open" type="button">Inställningar</button>
+  <button class="chip" id="scene-next" type="button">Scen: Äng</button>
   <button class="chip" id="view" type="button">Vy: Ovanifrån</button>
   <button class="chip" id="clock" type="button">Tid 15:00</button>
   <div id="timerow" hidden>
@@ -144,6 +147,10 @@ body {
       <h2 id="settings-title">Inställningar</h2>
       <button class="chip" id="settings-done" type="button">Klar</button>
     </header>
+    <section>
+      <h3>Scen</h3>
+      <div class="row-buttons" id="scene-picks"></div>
+    </section>
     <section>
       <h3>Strängar</h3>
       <div class="setting"><label for="voice">Ljud</label><select id="voice" class="pick"></select></div>
@@ -169,7 +176,7 @@ body {
 <div id="start">
   <div class="start-card">
     <h1>Touch Grass</h1>
-    <p>Dra fingrarna över ängen. Höjden på skärmen väljer ackord, i sidled knäpper du strängarna. Låt fingret ligga kvar så sjunker det djupare i gräset och klangen ljusnar.</p>
+    <p>Dra fingrarna över ytan. Höjden på skärmen väljer ackord, i sidled knäpper du strängarna och ett tryck slår an en sträng. Låt fingret ligga kvar så ljusnar klangen.</p>
     <button id="begin" type="button">Börja</button>
     <span class="note" id="chordline">G · D · A · Em, uppifrån och ner</span>
   </div>
@@ -630,11 +637,18 @@ const chordName = (r, q) => NOTE_NAMES[r] + KINDS[q][0];
 
 const settings = (() => {
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));   // the page's clamp is defined further down
-  const s = { chords: DEFAULT_CHORDS.map((c) => c.slice()), voice: 1, ring: 3.5, drone: true, droneLevel: 0.35, droneBright: 0.42 };
+  const s = { scene: "meadow", sound: {}, chords: DEFAULT_CHORDS.map((c) => c.slice()), voice: 1, ring: 3.5, drone: true, droneLevel: 0.35, droneBright: 0.42 };
   try {
     const saved = JSON.parse(localStorage.getItem("touchgrass.settings") || "null");
     if (saved && Array.isArray(saved.chords) && saved.chords.length >= 1) {
       s.chords = saved.chords.slice(0, MAX_PLATES).map(([r, q]) => [clamp(r | 0, 0, 11), clamp(q | 0, 0, 4)]);
+    }
+    if (saved && typeof saved.scene === "string") s.scene = saved.scene;
+    if (saved && saved.sound && typeof saved.sound === "object") {
+      for (const id in saved.sound) {
+        const v = saved.sound[id];
+        if (v && Number.isInteger(v.voice) && Number.isFinite(v.ring)) s.sound[id] = { voice: clamp(v.voice, 0, 3), ring: clamp(v.ring, 0.8, 10) };
+      }
     }
     if (saved && Number.isInteger(saved.voice)) s.voice = clamp(saved.voice, 0, 3);
     if (saved && Number.isFinite(saved.ring)) s.ring = clamp(saved.ring, 0.8, 10);
@@ -739,48 +753,8 @@ function target(size) {
   });
 }
 
-// Where the grass has been touched. Never cleared: each frame every texel is
-// pulled back toward rest (at least one 8-bit step, so it cannot stall where
-// half floats are missing), then the fingers are stamped on top. So the
-// blades part round a finger and the wake behind it closes over seconds.
 const MAX_TOUCH = 10;
-let bendA = target(384), bendB = target(384);
-const bendMat = new THREE.ShaderMaterial({
-  vertexShader: PASS_VERT,
-  uniforms: {
-    uPrev: { value: null }, uDecay: { value: 0.02 }, uCount: { value: 0 },
-    uTouch: { value: Array.from({ length: MAX_TOUCH }, () => new THREE.Vector4()) },
-    uDrag: { value: Array.from({ length: MAX_TOUCH }, () => new THREE.Vector4()) },
-    uRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
-    uInit: { value: 1 },
-  },
-  fragmentShader: `
-    uniform sampler2D uPrev; uniform float uDecay; uniform int uCount; uniform float uInit;
-    uniform vec4 uTouch[${MAX_TOUCH}]; uniform vec4 uDrag[${MAX_TOUCH}]; uniform vec3 uRect;
-    varying vec2 vUv;
-    void main() {
-      vec3 rest = vec3(0.5, 0.5, 0.0);
-      vec3 c = mix(texture2D(uPrev, vUv).rgb, rest, uInit);
-      vec3 d = c - rest;
-      vec3 back = d * uDecay;
-      vec3 minStep = sign(d) * min(abs(d), vec3(1.2 / 255.0));
-      c -= mix(minStep, back, step(abs(minStep), abs(back)));
-      vec2 w = uRect.xy + vUv * uRect.z;
-      for (int i = 0; i < ${MAX_TOUCH}; i++) {
-        if (i >= uCount) break;
-        vec2 o = w - uTouch[i].xy;
-        float dist = length(o);
-        float r = dist / uTouch[i].z;
-        float fall = 1.0 - smoothstep(0.0, 1.0, r);
-        if (fall <= 0.0) continue;
-        vec2 radial = dist > 1e-3 ? o / dist : vec2(0.0);
-        vec2 push = clamp(radial * smoothstep(0.0, 0.4, r) * 0.75 + uDrag[i].xy * 0.7, -1.0, 1.0);
-        vec3 stamp = vec3(0.5 + 0.5 * push, uTouch[i].w * fall);
-        c = mix(c, stamp, fall * uDrag[i].z);
-      }
-      gl_FragColor = vec4(c, 1.0);
-    }`,
-});
+
 
 // Rings from plucked strings, drawn fresh each frame: rgb their light,
 // a how hard they bow the blades as they pass.
@@ -811,19 +785,7 @@ const rippleMat = new THREE.ShaderMaterial({
     }`,
 });
 
-// ---- the meadow --------------------------------------------------------------
-const COMMON_GLSL = `
-  uniform sampler2D uNoise;
-  float dryAt(vec2 xz) { return smoothstep(0.42, 0.66, texture2D(uNoise, xz / 64.0).r); }
-  float lushAt(vec2 xz) { return texture2D(uNoise, xz / 64.0 + vec2(0.37, 0.11)).g; }
-  vec3 grassLow(vec2 xz) { return mix(vec3(0.018, 0.05, 0.010), vec3(0.11, 0.09, 0.03), dryAt(xz)); }
-  vec3 grassHigh(vec2 xz) {
-    vec3 green = mix(vec3(0.20, 0.36, 0.03), vec3(0.36, 0.48, 0.045), lushAt(xz));
-    return mix(green, vec3(0.56, 0.44, 0.11), dryAt(xz));
-  }
-  vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
-`;
-
+// ---- light, shared by every scene ------------------------------------------
 const lightUniforms = {
   uSunDir: { value: new THREE.Vector3(0.3, 0.8, -0.5).normalize() },
   uSunCol: { value: new THREE.Color(1, 0.9, 0.75) },
@@ -833,200 +795,7 @@ const lightUniforms = {
   uWarm: { value: 0.3 },
 };
 
-const grassUniforms = Object.assign({
-  uNoise: { value: noiseTex },
-  uBend: { value: bendA.texture },
-  uRipple: { value: rippleRT.texture },
-  uRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
-  uSpacing: { value: 0.08 }, uWidthScale: { value: 1 }, uFieldMin: { value: new THREE.Vector2() },
-  uTime: { value: 0 }, uWindDir: { value: new THREE.Vector2(0.8, -0.6).normalize() },
-  uWind: { value: 0.45 }, uGustSpeed: { value: 5.0 },
-  uMusic: { value: new THREE.Vector3() },
-}, lightUniforms);
 
-const grassMat = new THREE.ShaderMaterial({
-  uniforms: grassUniforms,
-  side: THREE.DoubleSide,
-  vertexShader: `
-    attribute vec2 aCell;
-    uniform sampler2D uBend; uniform sampler2D uRipple; uniform vec3 uRect;
-    uniform float uSpacing, uWidthScale, uTime, uWind, uGustSpeed;
-    uniform vec2 uFieldMin, uWindDir; uniform vec3 uMusic;
-    varying float vT; varying float vGust; varying vec3 vLow; varying vec3 vHigh;
-    varying vec3 vGlow; varying vec3 vN; varying vec3 vWorld; varying float vSparkle;
-    ${COMMON_GLSL}
-    vec4 hash42(vec2 p) {
-      vec4 p4 = fract(vec4(p.xyxy) * vec4(0.1031, 0.1030, 0.0973, 0.1099));
-      p4 += dot(p4, p4.wzxy + 33.33);
-      return fract((p4.xxyz + p4.yzzw) * p4.zywx);
-    }
-    void main() {
-      vec4 h = hash42(aCell + 17.0);
-      vec4 h2 = hash42(aCell * 1.618 + 3.0);
-      vec2 root = uFieldMin + (aCell + h.xy) * uSpacing;
-      float lush = lushAt(root);
-      float L = mix(0.42, 1.0, lush) * (0.7 + 0.6 * h.z);
-      float yaw = h.w * 6.2831853;
-      vec2 face = vec2(cos(yaw), sin(yaw));
-      float yaw2 = h2.x * 6.2831853;
-      vec2 droop = vec2(cos(yaw2), sin(yaw2)) * mix(0.12, 0.6, h.z * h.z);
-
-      vec2 wd = uWindDir, wp = vec2(-wd.y, wd.x);
-      vec2 q = root - wd * uTime * uGustSpeed;
-      float n = texture2D(uNoise, q / 100.0).a * 0.65 + texture2D(uNoise, q / 32.0 + vec2(0.3, 0.7)).a * 0.35;
-      float g = clamp(smoothstep(0.45, 0.78, n) + uMusic.x * 0.5, 0.0, 1.0);
-      float ph = h2.y * 6.2831853;
-      float flutter = sin(uTime * (2.2 + h.z * 1.6) + ph + dot(root, wd) * 1.3);
-      float flutter2 = sin(uTime * (3.1 + h.z) + ph * 1.7);
-      vec2 v = droop + wd * uWind * (0.25 + 1.25 * g) + wd * flutter * 0.07 * (0.4 + g) + wp * flutter2 * 0.05;
-
-      vec2 buv = (root - uRect.xy) / uRect.z;
-      float inside = step(0.0, buv.x) * step(buv.x, 1.0) * step(0.0, buv.y) * step(buv.y, 1.0);
-      vec4 b = texture2D(uBend, buv);
-      vec2 push = (b.rg - 0.5) * 2.0 * inside;
-      float press = clamp(b.b, 0.0, 1.0) * inside;
-      vec4 rp = texture2D(uRipple, buv) * inside;
-      v = v * (1.0 - 0.6 * min(length(push), 1.0)) + push * 1.5;
-      float vl = max(length(v), 1e-4);
-      float a = min(vl + press * 0.9 + rp.a * 0.7, 1.5);
-      vec2 dir = v / vl;
-
-      float t = position.y, s = position.x;
-      vec3 hd = vec3(dir.x, 0.0, dir.y);
-      vec3 P1 = hd * sin(a) * L * 0.18 + vec3(0.0, L * 0.55, 0.0);
-      vec3 P2 = hd * sin(a) * L + vec3(0.0, cos(a) * L, 0.0);
-      vec3 pos = 2.0 * (1.0 - t) * t * P1 + t * t * P2;
-      vec3 tng = normalize(2.0 * (1.0 - t) * P1 + 2.0 * t * (P2 - P1) + vec3(0.0, 1e-4, 0.0));
-      vec3 side = vec3(face.x, 0.0, face.y);
-      float w = uSpacing * 0.75 * uWidthScale * (0.75 + 0.5 * h2.z);
-      pos += side * s * w * pow(1.0 - t, 0.6);
-      vN = normalize(mix(normalize(cross(side, tng)), vec3(0.0, 1.0, 0.0), 0.6));
-      vec3 world = vec3(root.x, -0.02, root.y) + pos;
-      vWorld = world;
-      vT = t; vGust = g;
-      vLow = grassLow(root);
-      vHigh = grassHigh(root) * (0.85 + 0.3 * h2.w);
-      vGlow = rp.rgb;
-      vSparkle = uMusic.z * step(0.93, fract(h.z * 37.0 + uTime * 0.7));
-      gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
-    }`,
-  fragmentShader: `
-    uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity, uWarm;
-    varying float vT; varying float vGust; varying vec3 vLow; varying vec3 vHigh;
-    varying vec3 vGlow; varying vec3 vN; varying vec3 vWorld; varying float vSparkle;
-    vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
-    void main() {
-      vec3 col = mix(vLow, vHigh, smoothstep(0.0, 0.85, vT));
-      col *= mix(0.35, 1.0, smoothstep(0.0, 0.55, vT));
-      col *= 1.0 + vGust * 0.28 * vT;
-      col = mix(col, col * vec3(1.15, 1.0, 0.7), uWarm * vT);
-      vec3 n = normalize(gl_FrontFacing ? vN : vN);
-      float lam = max(dot(n, uSunDir), 0.0) * 0.6 + 0.4;
-      vec3 lit = col * (uAmbient + uSunCol * lam * 1.4) + col * uSunCol * 0.3 * vT;
-      lit += vGlow * vT * vT * 0.55 + vec3(1.0, 0.95, 0.8) * vSparkle * vT * vT * 0.8;
-      float fog = 1.0 - exp(-uFogDensity * length(vWorld - cameraPosition));
-      lit = mix(lit, uFogCol, fog);
-      gl_FragColor = vec4(pow(tonemap(lit), vec3(1.0 / 2.2)), 1.0);
-    }`,
-});
-
-const groundMat = new THREE.ShaderMaterial({
-  uniforms: Object.assign({ uNoise: { value: noiseTex }, uFieldMin: grassUniforms.uFieldMin, uFieldMax: { value: new THREE.Vector2() } }, lightUniforms),
-  vertexShader: "varying vec3 vWorld; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }",
-  fragmentShader: `
-    uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity; uniform vec2 uFieldMin, uFieldMax;
-    varying vec3 vWorld;
-    ${COMMON_GLSL}
-    void main() {
-      vec2 xz = vWorld.xz;
-      float n = texture2D(uNoise, xz / 9.0).b;
-      vec3 low = grassLow(xz) * (0.8 + 0.4 * n);
-      // past the blades the ground takes the colour of their tips
-      vec2 outside = max(uFieldMin - xz, xz - uFieldMax);
-      float far = smoothstep(-1.0, 3.0, max(outside.x, outside.y));
-      vec3 c = mix(low, grassHigh(xz) * 0.6, far);
-      vec3 lit = c * (uAmbient + uSunCol * (max(uSunDir.y, 0.0) * 0.6 + 0.4) * 1.6);
-      float fog = 1.0 - exp(-uFogDensity * length(vWorld - cameraPosition));
-      gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
-    }`,
-});
-const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), groundMat);
-ground.rotation.x = -Math.PI / 2;
-scene.add(ground);
-
-// One blade: a strip from root (y 0) to tip (y 1), x -0.5..0.5 across.
-function bladeGeometry(segments) {
-  const pos = [], idx = [];
-  for (let k = 0; k < segments; k++) { const t = k / segments; pos.push(-0.5, t, 0, 0.5, t, 0); }
-  pos.push(0, 1, 0);
-  for (let k = 0; k < segments - 1; k++) { const a = k * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
-  const last = (segments - 1) * 2;
-  idx.push(last, segments * 2, last + 1);
-  const g = new THREE.InstancedBufferGeometry();
-  g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-  g.setIndex(idx);
-  return g;
-}
-
-// The field: a grid of cells covering what every view sees, in a shuffled
-// order, so drawing fewer blades thins the whole meadow evenly. Blades widen
-// as they thin so the meadow stays full.
-const MAX_BLADES = 150000;
-let budget = 70000;
-const bladeGeo = bladeGeometry(4);
-const blades = new THREE.Mesh(bladeGeo, grassMat);
-blades.frustumCulled = false;
-scene.add(blades);
-let fieldArea = 1;
-
-function footprint(view, aspect) {
-  const cam = new THREE.PerspectiveCamera(view.fov, aspect, 0.1, 100);
-  cam.position.set(...view.pos); cam.lookAt(...view.look); cam.updateMatrixWorld(); cam.updateProjectionMatrix();
-  const pts = [];
-  for (const [x, y] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
-    const p = new THREE.Vector3(x, y, 0.5).unproject(cam).sub(cam.position).normalize();
-    const t = p.y < -0.05 ? -cam.position.y / p.y : 40;
-    const hit = cam.position.clone().addScaledVector(p, Math.min(t, 40));
-    pts.push([clamp(hit.x, -FIELD_LIMIT, FIELD_LIMIT), clamp(hit.z, -FIELD_LIMIT, FIELD_LIMIT)]);
-  }
-  return pts;
-}
-
-function buildField() {
-  const aspect = window.innerWidth / Math.max(1, window.innerHeight);
-  let minX = 1e9, minZ = 1e9, maxX = -1e9, maxZ = -1e9;
-  for (const v of VIEWS) for (const [x, z] of footprint(v, aspect)) {
-    minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
-  }
-  minX -= 1.5; minZ -= 1.5; maxX += 1.5; maxZ += 1.5;
-  const w = maxX - minX, d = maxZ - minZ;
-  fieldArea = w * d;
-  const spacing = Math.sqrt(fieldArea / MAX_BLADES);
-  const nx = Math.ceil(w / spacing), nz = Math.ceil(d / spacing);
-  const n = nx * nz;
-  const cells = new Float32Array(n * 2);
-  for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const k = (j * nx + i) * 2; cells[k] = i; cells[k + 1] = j; }
-  let s = 12345;
-  for (let k = n - 1; k > 0; k--) {
-    s = (s * 1664525 + 1013904223) >>> 0;
-    const r = s % (k + 1);
-    const ax = cells[2 * k], az = cells[2 * k + 1];
-    cells[2 * k] = cells[2 * r]; cells[2 * k + 1] = cells[2 * r + 1];
-    cells[2 * r] = ax; cells[2 * r + 1] = az;
-  }
-  bladeGeo.setAttribute("aCell", new THREE.InstancedBufferAttribute(cells, 2));
-  grassUniforms.uSpacing.value = spacing;
-  grassUniforms.uFieldMin.value.set(minX, minZ);
-  groundMat.uniforms.uFieldMax.value.set(maxX, maxZ);
-  bladeGeo.maxCells = n;
-  setBudget(budget);
-}
-
-function setBudget(b) {
-  budget = clamp(Math.round(b), 15000, Math.min(MAX_BLADES, bladeGeo.maxCells || MAX_BLADES));
-  bladeGeo.instanceCount = budget;
-  grassUniforms.uWidthScale.value = Math.sqrt(MAX_BLADES / budget) * 0.9;
-}
 
 // ---- touch glow and pollen ----------------------------------------------------
 function dotTexture() {
@@ -1044,6 +813,7 @@ const POLLEN = 360;
 const pollenGeo = new THREE.BufferGeometry();
 const pPos = new Float32Array(POLLEN * 3), pCol = new Float32Array(POLLEN * 3);
 const pVel = new Float32Array(POLLEN * 3), pLife = new Float32Array(POLLEN);
+const pGrav = new Float32Array(POLLEN), pDrag = new Float32Array(POLLEN);
 for (let i = 0; i < POLLEN; i++) pPos[i * 3 + 1] = -100;
 pollenGeo.setAttribute("position", new THREE.BufferAttribute(pPos, 3));
 pollenGeo.setAttribute("color", new THREE.BufferAttribute(pCol, 3));
@@ -1055,15 +825,29 @@ pollen.frustumCulled = false;
 scene.add(pollen);
 let pollenNext = 0;
 
-function burst(at, rgb, strength) {
-  for (let k = 0; k < 14; k++) {
+// kind "pollen": light motes that drift up and away on the breeze.
+// kind "splash": droplets thrown up from water that fall back and vanish into it.
+function burst(at, rgb, strength, kind = "pollen") {
+  const splash = kind === "splash";
+  const count = splash ? 22 : 14;
+  for (let k = 0; k < count; k++) {
     const i = pollenNext; pollenNext = (pollenNext + 1) % POLLEN;
-    const a = Math.random() * Math.PI * 2, r = Math.random() * 0.25;
-    pPos[i * 3] = at.x + Math.cos(a) * r; pPos[i * 3 + 1] = GRASS_TOP + Math.random() * 0.2; pPos[i * 3 + 2] = at.z + Math.sin(a) * r;
-    pVel[i * 3] = Math.cos(a) * 0.3 * Math.random(); pVel[i * 3 + 1] = 0.25 + 0.5 * Math.random() * strength; pVel[i * 3 + 2] = Math.sin(a) * 0.3 * Math.random();
-    pLife[i] = 1.6 + Math.random() * 0.8;
-    const m = 0.6 + 0.4 * Math.random();
-    pCol[i * 3] = lerp(rgb[0], 1, 0.4) * m; pCol[i * 3 + 1] = lerp(rgb[1], 1, 0.4) * m; pCol[i * 3 + 2] = lerp(rgb[2], 0.9, 0.4) * m;
+    const a = Math.random() * Math.PI * 2, r = Math.random() * (splash ? 0.12 : 0.25);
+    pPos[i * 3] = at.x + Math.cos(a) * r; pPos[i * 3 + 2] = at.z + Math.sin(a) * r;
+    if (splash) {
+      const out = (0.3 + 0.9 * Math.random()) * (0.5 + strength);
+      pPos[i * 3 + 1] = at.y + 0.02;
+      pVel[i * 3] = Math.cos(a) * out; pVel[i * 3 + 1] = 1.2 + 1.8 * Math.random() * (0.4 + strength); pVel[i * 3 + 2] = Math.sin(a) * out;
+      pLife[i] = 0.9 + Math.random() * 0.6; pGrav[i] = -7.5; pDrag[i] = 0.15;
+      const m = 0.8 + 0.2 * Math.random();
+      pCol[i * 3] = lerp(rgb[0], 1, 0.75) * m; pCol[i * 3 + 1] = lerp(rgb[1], 1, 0.75) * m; pCol[i * 3 + 2] = lerp(rgb[2], 1, 0.8) * m;
+    } else {
+      pPos[i * 3 + 1] = at.y + 0.1 + Math.random() * 0.2;
+      pVel[i * 3] = Math.cos(a) * 0.3 * Math.random(); pVel[i * 3 + 1] = 0.25 + 0.5 * Math.random() * strength; pVel[i * 3 + 2] = Math.sin(a) * 0.3 * Math.random();
+      pLife[i] = 1.6 + Math.random() * 0.8; pGrav[i] = 0.05; pDrag[i] = 0.5;
+      const m = 0.6 + 0.4 * Math.random();
+      pCol[i * 3] = lerp(rgb[0], 1, 0.4) * m; pCol[i * 3 + 1] = lerp(rgb[1], 1, 0.4) * m; pCol[i * 3 + 2] = lerp(rgb[2], 0.9, 0.4) * m;
+    }
   }
 }
 
@@ -1072,11 +856,14 @@ function stepPollen(dt) {
     if (pLife[i] <= 0) continue;
     pLife[i] -= dt;
     const k = i * 3;
-    pVel[k] += 0.15 * dt; pVel[k + 1] += 0.05 * dt; pVel[k + 2] -= 0.08 * dt;
-    pVel[k] *= 1 - 0.5 * dt; pVel[k + 1] *= 1 - 0.5 * dt; pVel[k + 2] *= 1 - 0.5 * dt;
+    const drift = pGrav[i] > 0 ? 1 : 0;                 // only pollen rides the breeze
+    pVel[k] += 0.15 * dt * drift; pVel[k + 1] += pGrav[i] * dt; pVel[k + 2] -= 0.08 * dt * drift;
+    const drag = 1 - pDrag[i] * dt;
+    pVel[k] *= drag; pVel[k + 1] *= drag; pVel[k + 2] *= drag;
     pPos[k] += pVel[k] * dt; pPos[k + 1] += pVel[k + 1] * dt; pPos[k + 2] += pVel[k + 2] * dt;
     const fade = Math.min(1, pLife[i] / 0.8);
     pCol[k] *= fade > 0.999 ? 1 : 0.985; pCol[k + 1] *= fade > 0.999 ? 1 : 0.985; pCol[k + 2] *= fade > 0.999 ? 1 : 0.985;
+    if (pGrav[i] < 0 && pVel[k + 1] < 0 && pPos[k + 1] < -0.02) pLife[i] = 0;   // a droplet back in the water
     if (pLife[i] <= 0) pPos[k + 1] = -100;
   }
   pollenGeo.attributes.position.needsUpdate = true;
@@ -1085,8 +872,942 @@ function stepPollen(dt) {
 
 const glowMat = new THREE.SpriteMaterial({ map: dotTex, color: 0xfff1cf, transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending, opacity: 0.0 });
 
+// ---- the scenes ------------------------------------------------------------------
+// ---- scene: the meadow ---------------------------------------------------------
+// Long grass that parts round each finger and closes behind it, rings of light
+// from every pluck, pollen, and blades that sway and glint with the music.
+const meadowScene = (() => {
+  const group = new THREE.Group();
+
+  // Where the grass has been touched. Never cleared: each frame every texel is
+  // pulled back toward rest (at least one 8-bit step, so it cannot stall where
+  // half floats are missing), then the fingers are stamped on top. So the
+  // blades part round a finger and the wake behind it closes over seconds.
+  let bendA = target(384), bendB = target(384);
+  const bendMat = new THREE.ShaderMaterial({
+    vertexShader: PASS_VERT,
+    uniforms: {
+      uPrev: { value: null }, uDecay: { value: 0.02 }, uCount: { value: 0 },
+      uTouch: { value: Array.from({ length: MAX_TOUCH }, () => new THREE.Vector4()) },
+      uDrag: { value: Array.from({ length: MAX_TOUCH }, () => new THREE.Vector4()) },
+      uRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
+      uInit: { value: 1 },
+    },
+    fragmentShader: `
+      uniform sampler2D uPrev; uniform float uDecay; uniform int uCount; uniform float uInit;
+      uniform vec4 uTouch[${MAX_TOUCH}]; uniform vec4 uDrag[${MAX_TOUCH}]; uniform vec3 uRect;
+      varying vec2 vUv;
+      void main() {
+        vec3 rest = vec3(0.5, 0.5, 0.0);
+        vec3 c = mix(texture2D(uPrev, vUv).rgb, rest, uInit);
+        vec3 d = c - rest;
+        vec3 back = d * uDecay;
+        vec3 minStep = sign(d) * min(abs(d), vec3(1.2 / 255.0));
+        c -= mix(minStep, back, step(abs(minStep), abs(back)));
+        vec2 w = uRect.xy + vUv * uRect.z;
+        for (int i = 0; i < ${MAX_TOUCH}; i++) {
+          if (i >= uCount) break;
+          vec2 o = w - uTouch[i].xy;
+          float dist = length(o);
+          float r = dist / uTouch[i].z;
+          float fall = 1.0 - smoothstep(0.0, 1.0, r);
+          if (fall <= 0.0) continue;
+          vec2 radial = dist > 1e-3 ? o / dist : vec2(0.0);
+          vec2 push = clamp(radial * smoothstep(0.0, 0.4, r) * 0.75 + uDrag[i].xy * 0.7, -1.0, 1.0);
+          vec3 stamp = vec3(0.5 + 0.5 * push, uTouch[i].w * fall);
+          c = mix(c, stamp, fall * uDrag[i].z);
+        }
+        gl_FragColor = vec4(c, 1.0);
+      }`,
+  });
+
+  const COMMON_GLSL = `
+    uniform sampler2D uNoise;
+    float dryAt(vec2 xz) { return smoothstep(0.42, 0.66, texture2D(uNoise, xz / 64.0).r); }
+    float lushAt(vec2 xz) { return texture2D(uNoise, xz / 64.0 + vec2(0.37, 0.11)).g; }
+    vec3 grassLow(vec2 xz) { return mix(vec3(0.018, 0.05, 0.010), vec3(0.11, 0.09, 0.03), dryAt(xz)); }
+    vec3 grassHigh(vec2 xz) {
+      vec3 green = mix(vec3(0.20, 0.36, 0.03), vec3(0.36, 0.48, 0.045), lushAt(xz));
+      return mix(green, vec3(0.56, 0.44, 0.11), dryAt(xz));
+    }
+    vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+  `;
+
+  const grassUniforms = Object.assign({
+    uNoise: { value: noiseTex },
+    uBend: { value: bendA.texture },
+    uRipple: { value: rippleRT.texture },
+    uRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
+    uSpacing: { value: 0.08 }, uWidthScale: { value: 1 }, uFieldMin: { value: new THREE.Vector2() },
+    uTime: { value: 0 }, uWindDir: { value: new THREE.Vector2(0.8, -0.6).normalize() },
+    uWind: { value: 0.45 }, uGustSpeed: { value: 5.0 },
+    uMusic: { value: new THREE.Vector3() },
+  }, lightUniforms);
+
+  const grassMat = new THREE.ShaderMaterial({
+    uniforms: grassUniforms,
+    side: THREE.DoubleSide,
+    vertexShader: `
+      attribute vec2 aCell;
+      uniform sampler2D uBend; uniform sampler2D uRipple; uniform vec3 uRect;
+      uniform float uSpacing, uWidthScale, uTime, uWind, uGustSpeed;
+      uniform vec2 uFieldMin, uWindDir; uniform vec3 uMusic;
+      varying float vT; varying float vGust; varying vec3 vLow; varying vec3 vHigh;
+      varying vec3 vGlow; varying vec3 vN; varying vec3 vWorld; varying float vSparkle;
+      ${COMMON_GLSL}
+      vec4 hash42(vec2 p) {
+        vec4 p4 = fract(vec4(p.xyxy) * vec4(0.1031, 0.1030, 0.0973, 0.1099));
+        p4 += dot(p4, p4.wzxy + 33.33);
+        return fract((p4.xxyz + p4.yzzw) * p4.zywx);
+      }
+      void main() {
+        vec4 h = hash42(aCell + 17.0);
+        vec4 h2 = hash42(aCell * 1.618 + 3.0);
+        vec2 root = uFieldMin + (aCell + h.xy) * uSpacing;
+        float lush = lushAt(root);
+        float L = mix(0.42, 1.0, lush) * (0.7 + 0.6 * h.z);
+        float yaw = h.w * 6.2831853;
+        vec2 face = vec2(cos(yaw), sin(yaw));
+        float yaw2 = h2.x * 6.2831853;
+        vec2 droop = vec2(cos(yaw2), sin(yaw2)) * mix(0.12, 0.6, h.z * h.z);
+
+        vec2 wd = uWindDir, wp = vec2(-wd.y, wd.x);
+        vec2 q = root - wd * uTime * uGustSpeed;
+        float n = texture2D(uNoise, q / 100.0).a * 0.65 + texture2D(uNoise, q / 32.0 + vec2(0.3, 0.7)).a * 0.35;
+        float g = clamp(smoothstep(0.45, 0.78, n) + uMusic.x * 0.5, 0.0, 1.0);
+        float ph = h2.y * 6.2831853;
+        float flutter = sin(uTime * (2.2 + h.z * 1.6) + ph + dot(root, wd) * 1.3);
+        float flutter2 = sin(uTime * (3.1 + h.z) + ph * 1.7);
+        vec2 v = droop + wd * uWind * (0.25 + 1.25 * g) + wd * flutter * 0.07 * (0.4 + g) + wp * flutter2 * 0.05;
+
+        vec2 buv = (root - uRect.xy) / uRect.z;
+        float inside = step(0.0, buv.x) * step(buv.x, 1.0) * step(0.0, buv.y) * step(buv.y, 1.0);
+        vec4 b = texture2D(uBend, buv);
+        vec2 push = (b.rg - 0.5) * 2.0 * inside;
+        float press = clamp(b.b, 0.0, 1.0) * inside;
+        vec4 rp = texture2D(uRipple, buv) * inside;
+        v = v * (1.0 - 0.6 * min(length(push), 1.0)) + push * 1.5;
+        float vl = max(length(v), 1e-4);
+        float a = min(vl + press * 0.9 + rp.a * 0.7, 1.5);
+        vec2 dir = v / vl;
+
+        float t = position.y, s = position.x;
+        vec3 hd = vec3(dir.x, 0.0, dir.y);
+        vec3 P1 = hd * sin(a) * L * 0.18 + vec3(0.0, L * 0.55, 0.0);
+        vec3 P2 = hd * sin(a) * L + vec3(0.0, cos(a) * L, 0.0);
+        vec3 pos = 2.0 * (1.0 - t) * t * P1 + t * t * P2;
+        vec3 tng = normalize(2.0 * (1.0 - t) * P1 + 2.0 * t * (P2 - P1) + vec3(0.0, 1e-4, 0.0));
+        vec3 side = vec3(face.x, 0.0, face.y);
+        float w = uSpacing * 0.75 * uWidthScale * (0.75 + 0.5 * h2.z);
+        pos += side * s * w * pow(1.0 - t, 0.6);
+        vN = normalize(mix(normalize(cross(side, tng)), vec3(0.0, 1.0, 0.0), 0.6));
+        vec3 world = vec3(root.x, -0.02, root.y) + pos;
+        vWorld = world;
+        vT = t; vGust = g;
+        vLow = grassLow(root);
+        vHigh = grassHigh(root) * (0.85 + 0.3 * h2.w);
+        vGlow = rp.rgb;
+        vSparkle = uMusic.z * step(0.93, fract(h.z * 37.0 + uTime * 0.7));
+        gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
+      }`,
+    fragmentShader: `
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity, uWarm;
+      varying float vT; varying float vGust; varying vec3 vLow; varying vec3 vHigh;
+      varying vec3 vGlow; varying vec3 vN; varying vec3 vWorld; varying float vSparkle;
+      vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+      void main() {
+        vec3 col = mix(vLow, vHigh, smoothstep(0.0, 0.85, vT));
+        col *= mix(0.35, 1.0, smoothstep(0.0, 0.55, vT));
+        col *= 1.0 + vGust * 0.28 * vT;
+        col = mix(col, col * vec3(1.15, 1.0, 0.7), uWarm * vT);
+        vec3 n = normalize(gl_FrontFacing ? vN : vN);
+        float lam = max(dot(n, uSunDir), 0.0) * 0.6 + 0.4;
+        vec3 lit = col * (uAmbient + uSunCol * lam * 1.4) + col * uSunCol * 0.3 * vT;
+        lit += vGlow * vT * vT * 0.55 + vec3(1.0, 0.95, 0.8) * vSparkle * vT * vT * 0.8;
+        float fog = 1.0 - exp(-uFogDensity * length(vWorld - cameraPosition));
+        lit = mix(lit, uFogCol, fog);
+        gl_FragColor = vec4(pow(tonemap(lit), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+
+  const groundMat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({ uNoise: { value: noiseTex }, uFieldMin: grassUniforms.uFieldMin, uFieldMax: { value: new THREE.Vector2() } }, lightUniforms),
+    vertexShader: "varying vec3 vWorld; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }",
+    fragmentShader: `
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity; uniform vec2 uFieldMin, uFieldMax;
+      varying vec3 vWorld;
+      ${COMMON_GLSL}
+      void main() {
+        vec2 xz = vWorld.xz;
+        float n = texture2D(uNoise, xz / 9.0).b;
+        vec3 low = grassLow(xz) * (0.8 + 0.4 * n);
+        // past the blades the ground takes the colour of their tips
+        vec2 outside = max(uFieldMin - xz, xz - uFieldMax);
+        float far = smoothstep(-1.0, 3.0, max(outside.x, outside.y));
+        vec3 c = mix(low, grassHigh(xz) * 0.6, far);
+        vec3 lit = c * (uAmbient + uSunCol * (max(uSunDir.y, 0.0) * 0.6 + 0.4) * 1.6);
+        float fog = 1.0 - exp(-uFogDensity * length(vWorld - cameraPosition));
+        gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+  const ground = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), groundMat);
+  ground.rotation.x = -Math.PI / 2;
+  group.add(ground);
+
+  // One blade: a strip from root (y 0) to tip (y 1), x -0.5..0.5 across.
+  function bladeGeometry(segments) {
+    const pos = [], idx = [];
+    for (let k = 0; k < segments; k++) { const t = k / segments; pos.push(-0.5, t, 0, 0.5, t, 0); }
+    pos.push(0, 1, 0);
+    for (let k = 0; k < segments - 1; k++) { const a = k * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+    const last = (segments - 1) * 2;
+    idx.push(last, segments * 2, last + 1);
+    const g = new THREE.InstancedBufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    g.setIndex(idx);
+    return g;
+  }
+
+  // The field: a grid of cells covering what every view sees, in a shuffled
+  // order, so drawing fewer blades thins the whole meadow evenly. Blades widen
+  // as they thin so the meadow stays full.
+  const MAX_BLADES = 150000;
+  let budget = 70000;
+  const bladeGeo = bladeGeometry(4);
+  const blades = new THREE.Mesh(bladeGeo, grassMat);
+  blades.frustumCulled = false;
+  group.add(blades);
+  let fieldArea = 1;
+
+  function footprint(view, aspect) {
+    const cam = new THREE.PerspectiveCamera(view.fov, aspect, 0.1, 100);
+    cam.position.set(...view.pos); cam.lookAt(...view.look); cam.updateMatrixWorld(); cam.updateProjectionMatrix();
+    const pts = [];
+    for (const [x, y] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      const p = new THREE.Vector3(x, y, 0.5).unproject(cam).sub(cam.position).normalize();
+      const t = p.y < -0.05 ? -cam.position.y / p.y : 40;
+      const hit = cam.position.clone().addScaledVector(p, Math.min(t, 40));
+      pts.push([clamp(hit.x, -FIELD_LIMIT, FIELD_LIMIT), clamp(hit.z, -FIELD_LIMIT, FIELD_LIMIT)]);
+    }
+    return pts;
+  }
+
+  function buildField() {
+    const aspect = window.innerWidth / Math.max(1, window.innerHeight);
+    let minX = 1e9, minZ = 1e9, maxX = -1e9, maxZ = -1e9;
+    for (const v of VIEWS) for (const [x, z] of footprint(v, aspect)) {
+      minX = Math.min(minX, x); maxX = Math.max(maxX, x); minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+    }
+    minX -= 1.5; minZ -= 1.5; maxX += 1.5; maxZ += 1.5;
+    const w = maxX - minX, d = maxZ - minZ;
+    fieldArea = w * d;
+    const spacing = Math.sqrt(fieldArea / MAX_BLADES);
+    const nx = Math.ceil(w / spacing), nz = Math.ceil(d / spacing);
+    const n = nx * nz;
+    const cells = new Float32Array(n * 2);
+    for (let j = 0; j < nz; j++) for (let i = 0; i < nx; i++) { const k = (j * nx + i) * 2; cells[k] = i; cells[k + 1] = j; }
+    let s = 12345;
+    for (let k = n - 1; k > 0; k--) {
+      s = (s * 1664525 + 1013904223) >>> 0;
+      const r = s % (k + 1);
+      const ax = cells[2 * k], az = cells[2 * k + 1];
+      cells[2 * k] = cells[2 * r]; cells[2 * k + 1] = cells[2 * r + 1];
+      cells[2 * r] = ax; cells[2 * r + 1] = az;
+    }
+    bladeGeo.setAttribute("aCell", new THREE.InstancedBufferAttribute(cells, 2));
+    grassUniforms.uSpacing.value = spacing;
+    grassUniforms.uFieldMin.value.set(minX, minZ);
+    groundMat.uniforms.uFieldMax.value.set(maxX, maxZ);
+    bladeGeo.maxCells = n;
+    setBudget(budget);
+  }
+
+  function setBudget(b) {
+    budget = clamp(Math.round(b), 15000, Math.min(MAX_BLADES, bladeGeo.maxCells || MAX_BLADES));
+    bladeGeo.instanceCount = budget;
+    grassUniforms.uWidthScale.value = Math.sqrt(MAX_BLADES / budget) * 0.9;
+  }
+
+  const bendTouch = bendMat.uniforms.uTouch.value, bendDrag = bendMat.uniforms.uDrag.value;
+
+  // touches: {x, z, radius, press, dx, dz, strength} from the core, one per finger
+  function update(dt, touches, time) {
+    grassUniforms.uTime.value = time;
+    grassUniforms.uMusic.value.copy(music);
+    let n = 0;
+    for (const t of touches) {
+      if (n >= MAX_TOUCH) break;
+      bendTouch[n].set(t.x, t.z, t.radius, t.press);
+      bendDrag[n].set(t.dx, t.dz, t.strength, 0);
+      n++;
+    }
+    bendMat.uniforms.uCount.value = n;
+    bendMat.uniforms.uDecay.value = 1 - Math.exp(-dt / 2.6);
+    bendMat.uniforms.uPrev.value = bendA.texture;
+    passQuad.material = bendMat;
+    renderer.setRenderTarget(bendB);
+    renderer.render(passScene, passCam);
+    renderer.setRenderTarget(null);
+    bendMat.uniforms.uInit.value = 0;
+    [bendA, bendB] = [bendB, bendA];
+    grassUniforms.uBend.value = bendA.texture;
+  }
+
+  // keep the frame rate: fewer blades on a struggling phone, more on a strong one
+  let tuned = 0;
+  function tune(fps) {
+    if (tuned >= 6) return;
+    if (fps < 42) { setBudget(budget * 0.7); tuned++; }
+    else if (fps > 57 && budget < MAX_BLADES) { setBudget(budget * 1.25); tuned++; }
+  }
+
+  return {
+    id: "meadow", name: "Äng", group,
+    sound: { voice: 1, ring: 3.5, wet: 0.32 },
+    touchHeight: GRASS_TOP * 0.8, glowHeight: GRASS_TOP + 0.15,
+    resize: buildField, update, tune,
+    enter() { bendMat.uniforms.uInit.value = 1; },
+    exit() {},
+    tap() {},
+    pluck(f, col, vel) { burst(f.world, col, vel, "pollen"); },
+    stats() { return { blades: budget }; },
+  };
+})();
+
+
+// ---- scene: the pond -------------------------------------------------------------
+// A still pond seen from above. A sweep leaves a wake, a tap drops a ring and a
+// splash, every plucked string sends a ring of its plate's colour across the
+// surface. Lily pads and fallen leaves and petals ride the waves and drift from
+// the fingers; koi glide over a sandy bottom netted with sunlight, flee from
+// taps and come close to a finger that rests on the water.
+//
+// The waves are a real wave equation on the GPU (height and previous height in
+// one half-float texture, a few substeps a frame), so rings spread, cross,
+// reflect softly and die away on their own. Where half floats cannot be drawn
+// into, the pond keeps its light and its coloured rings but has no waves.
+const waterScene = (() => {
+  const group = new THREE.Group();
+  const SIZE = 36, RES = 320, DX = SIZE / RES;
+  const RECT = new THREE.Vector3(-SIZE / 2, -SIZE / 2, SIZE);
+  const BOTTOM = -1.1, KOI_DEPTH = -0.32;
+  const MAX_IMP = 14;
+  const simOK = floatTargets;
+
+  const TONEMAP = "vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }";
+  const SIM_GLSL = `
+    uniform sampler2D uSim; uniform vec3 uSimRect; uniform float uSimOn;
+    vec2 simUv(vec2 xz) { return (xz - uSimRect.xy) / uSimRect.z; }
+    float simInside(vec2 uv) { return step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0); }
+    float heightAt(vec2 xz) { vec2 uv = simUv(xz); return texture2D(uSim, uv).r * simInside(uv) * uSimOn; }
+    vec2 slopeAt(vec2 xz) {
+      float e = ${DX.toFixed(5)};
+      return vec2(heightAt(xz + vec2(e, 0.0)) - heightAt(xz - vec2(e, 0.0)),
+                  heightAt(xz + vec2(0.0, e)) - heightAt(xz - vec2(0.0, e))) / (2.0 * e);
+    }
+  `;
+
+  // ---- the wave simulation ----
+  function simTarget() {
+    return new THREE.WebGLRenderTarget(RES, RES, {
+      type: THREE.HalfFloatType, format: THREE.RGBAFormat,
+      minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false, stencilBuffer: false,
+    });
+  }
+  let simA = simOK ? simTarget() : null, simB = simOK ? simTarget() : null;
+  const impulses = Array.from({ length: MAX_IMP }, () => new THREE.Vector4());
+  const simMat = new THREE.ShaderMaterial({
+    vertexShader: PASS_VERT,
+    uniforms: {
+      uPrev: { value: null }, uTexel: { value: new THREE.Vector2(1 / RES, 1 / RES) },
+      uK: { value: 0.045 }, uDamp: { value: 0.9965 }, uInit: { value: 1 },
+      uCount: { value: 0 }, uImp: { value: impulses }, uRect: { value: RECT },
+    },
+    fragmentShader: `
+      uniform sampler2D uPrev; uniform vec2 uTexel; uniform float uK, uDamp, uInit;
+      uniform int uCount; uniform vec4 uImp[${MAX_IMP}]; uniform vec3 uRect;
+      varying vec2 vUv;
+      void main() {
+        vec4 c = texture2D(uPrev, vUv);
+        float h = c.r, hp = c.g;
+        float lap = texture2D(uPrev, vUv + vec2(uTexel.x, 0.0)).r + texture2D(uPrev, vUv - vec2(uTexel.x, 0.0)).r
+                  + texture2D(uPrev, vUv + vec2(0.0, uTexel.y)).r + texture2D(uPrev, vUv - vec2(0.0, uTexel.y)).r - 4.0 * h;
+        float hn = (2.0 * h - hp + uK * lap) * uDamp;
+        // the rim swallows waves instead of throwing them back
+        float edge = min(min(vUv.x, 1.0 - vUv.x), min(vUv.y, 1.0 - vUv.y));
+        hn *= mix(0.92, 1.0, smoothstep(0.0, 0.07, edge));
+        vec2 w = uRect.xy + vUv * uRect.z;
+        for (int i = 0; i < ${MAX_IMP}; i++) {
+          if (i >= uCount) break;
+          float d = length(w - uImp[i].xy) / uImp[i].z;
+          if (d < 1.0) hn += uImp[i].w * (0.5 + 0.5 * cos(d * 3.14159265));
+        }
+        hn = clamp(hn, -0.6, 0.6);
+        gl_FragColor = mix(vec4(hn, h, 0.0, 1.0), vec4(0.0), uInit);
+      }`,
+  });
+  const queued = [];          // one-shot impulses from taps and plucks
+  function impulse(x, z, radius, amount) { if (queued.length < MAX_IMP) queued.push([x, z, radius, amount]); }
+
+  const simUniforms = {
+    uSim: { value: simA ? simA.texture : null },
+    uSimRect: { value: RECT },
+    uSimOn: { value: simOK ? 1 : 0 },
+  };
+  const common = Object.assign({
+    uNoise: { value: noiseTex }, uTime: { value: 0 }, uMusic: { value: new THREE.Vector3() },
+  }, lightUniforms, simUniforms);
+
+  // ---- the bottom: sand and pebbles under a net of moving light ----
+  const bottomMat = new THREE.ShaderMaterial({
+    uniforms: common,
+    vertexShader: "varying vec3 vWorld; void main(){ vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }",
+    fragmentShader: `
+      uniform sampler2D uNoise; uniform float uTime;
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
+      varying vec3 vWorld;
+      ${SIM_GLSL}
+      ${TONEMAP}
+      void main() {
+        // the waves bend the view of the bottom, as refraction does
+        vec2 p = vWorld.xz + slopeAt(vWorld.xz) * 1.4;
+        float n = texture2D(uNoise, p / 9.0).b;
+        vec3 sand = mix(vec3(0.30, 0.27, 0.19), vec3(0.44, 0.39, 0.28), n);
+        float stones = smoothstep(0.62, 0.70, texture2D(uNoise, p / 5.0 + vec2(0.31, 0.77)).r);
+        sand = mix(sand, vec3(0.22, 0.22, 0.20) * (0.8 + 0.4 * n), stones);
+        float weed = smoothstep(0.58, 0.75, texture2D(uNoise, p / 23.0 + vec2(0.6, 0.2)).g);
+        sand = mix(sand, vec3(0.10, 0.20, 0.07), weed * 0.7);
+        // caustics: where two drifting noise fields meet, a thin line of light;
+        // and where the waves focus the sun, a brighter patch
+        vec2 q = p / 6.0;
+        float c1 = texture2D(uNoise, q * 0.9 + uTime * vec2(0.010, 0.006)).b;
+        float c2 = texture2D(uNoise, q * 1.13 - uTime * vec2(0.008, 0.011) + 0.5).b;
+        float caus = (1.0 - smoothstep(0.0, 0.04, abs(c1 - c2))) * smoothstep(0.35, 0.75, texture2D(uNoise, p / 31.0 + uTime * 0.004).g);
+        vec2 uv = simUv(vWorld.xz);
+        float h = heightAt(vWorld.xz);
+        float lapH = heightAt(vWorld.xz + vec2(0.25, 0.0)) + heightAt(vWorld.xz - vec2(0.25, 0.0))
+                   + heightAt(vWorld.xz + vec2(0.0, 0.25)) + heightAt(vWorld.xz - vec2(0.0, 0.25)) - 4.0 * h;
+        caus = caus * 0.55 + max(-lapH, 0.0) * 9.0;
+        vec3 lit = sand * (uAmbient * 0.8 + uSunCol * (0.55 + 0.9 * caus) * max(uSunDir.y, 0.15));
+        lit = mix(lit, vec3(0.02, 0.10, 0.10) * (uAmbient + uSunCol * 0.4), 0.48);
+        float fog = 1.0 - exp(-uFogDensity * 0.4 * length(vWorld - cameraPosition));
+        gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+  const bottom = new THREE.Mesh(new THREE.PlaneGeometry(200, 200), bottomMat);
+  bottom.rotation.x = -Math.PI / 2;
+  bottom.position.y = BOTTOM;
+  group.add(bottom);
+
+  // ---- the surface: sky in the ripples, clear where you look straight down ----
+  const surfaceMat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({ uRipple: { value: rippleRT.texture }, uRippleRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) } }, common),
+    transparent: true, depthWrite: false,
+    vertexShader: `
+      varying vec3 vWorld;
+      ${SIM_GLSL}
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        w.y += heightAt(w.xz);
+        vWorld = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
+    fragmentShader: `
+      uniform sampler2D uNoise; uniform sampler2D uRipple; uniform vec3 uRippleRect;
+      uniform float uTime; uniform vec3 uMusic;
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
+      varying vec3 vWorld;
+      ${SIM_GLSL}
+      ${TONEMAP}
+      float ambient(vec2 xz) {
+        return texture2D(uNoise, xz / 7.0 + uTime * vec2(0.012, 0.007)).b * 0.6
+             + texture2D(uNoise, xz / 2.3 - uTime * vec2(0.020, 0.013)).b * 0.4;
+      }
+      void main() {
+        vec2 xz = vWorld.xz;
+        vec2 s = slopeAt(xz);
+        float crest = smoothstep(0.015, 0.12, length(s));     // where the simulated waves stand up
+        s *= 0.7;                                              // gentler mirrors on steep waves
+        // a breath of wind always moves the surface a little, more with the drone
+        float e = 0.08, a0 = ambient(xz);
+        vec2 amb = vec2(ambient(xz + vec2(e, 0.0)) - a0, ambient(xz + vec2(0.0, e)) - a0) / e;
+        s += amb * (0.022 + uMusic.x * 0.04);
+        vec3 n = normalize(vec3(-s.x, 1.0, -s.y));
+        vec3 V = normalize(cameraPosition - vWorld);
+        float fres = 0.02 + 0.98 * pow(1.0 - max(dot(n, V), 0.0), 5.0);
+        vec3 R = reflect(-V, n);
+        vec3 zenith = uAmbient * vec3(0.55, 0.85, 1.5);
+        vec3 sky = mix(uFogCol, zenith, smoothstep(0.0, 0.7, R.y));
+        float spec = pow(max(dot(R, uSunDir), 0.0), 420.0);
+        vec3 body = vec3(0.008, 0.055, 0.06) * (uAmbient + uSunCol * 0.3);
+        vec3 col = mix(body, sky, fres) + uSunCol * spec * 1.6;
+        // rings of colour from the plucked strings, and glints for the high notes
+        vec2 ruv = (xz - uRippleRect.xy) / uRippleRect.z;
+        vec3 glow = texture2D(uRipple, ruv).rgb * simInside(ruv);
+        // the plucked strings' colours tint only the wave crests: a sweep plucks a
+        // dozen strings, and their rings laid flat over the pond became a pale mat
+        col += glow * crest * 0.35;
+        float glint = step(0.986, texture2D(uNoise, xz / 1.7 + uTime * vec2(0.05, -0.03)).b) * uMusic.z;
+        col += uSunCol * glint * 0.6;
+        float alpha = clamp(0.33 + fres * 1.1 + spec * 0.6, 0.0, 1.0);
+        float fog = 1.0 - exp(-uFogDensity * 0.4 * length(vWorld - cameraPosition));
+        col = mix(col, uFogCol, fog);
+        alpha = mix(alpha, 1.0, fog);
+        gl_FragColor = vec4(pow(tonemap(col), vec3(1.0 / 2.2)), alpha);
+      }`,
+  });
+  const surface = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE, 180, 180), surfaceMat);
+  surface.rotation.x = -Math.PI / 2;
+  surface.renderOrder = 2;
+  group.add(surface);
+  // the rest of the pond, beyond the simulated part, flat
+  const farMat = surfaceMat.clone();
+  farMat.uniforms = surfaceMat.uniforms;
+  const far = new THREE.Mesh(new THREE.RingGeometry(SIZE * 0.5 * Math.SQRT2, 160, 4, 1, Math.PI / 4), farMat);
+  far.rotation.x = -Math.PI / 2;
+  far.position.y = -0.002;
+  far.renderOrder = 2;
+  group.add(far);
+
+  // ---- floating things: lily pads, leaves and petals -----------------------
+  // Positions live on the CPU (they are pushed by fingers and kicked by rings);
+  // the shaders lift them onto the waves and tilt them with the slope.
+  const FLOAT_VERT = `
+    attribute vec4 iPose;      // x, z, rotation, size
+    attribute vec4 iLook;      // kind-specific
+    varying vec2 vLocal; varying vec4 vLook; varying vec3 vWorld;
+    ${SIM_GLSL}
+    void main() {
+      vec2 c = vec2(cos(iPose.z), sin(iPose.z));
+      vec2 lp = position.xz * iPose.w;
+      vec2 r = vec2(lp.x * c.x - lp.y * c.y, lp.x * c.y + lp.y * c.x);
+      vec2 xz = iPose.xy + r;
+      vec2 sl = slopeAt(iPose.xy);
+      float y = heightAt(iPose.xy) + dot(sl, r) + 0.012 + position.y * iPose.w;
+      vWorld = vec3(xz.x, y, xz.y);
+      vLocal = position.xz; vLook = iLook;
+      gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
+    }`;
+
+  function floaterGeometry(base, count) {
+    const g = new THREE.InstancedBufferGeometry();
+    g.index = base.index;
+    g.setAttribute("position", base.attributes.position);
+    g.setAttribute("iPose", new THREE.InstancedBufferAttribute(new Float32Array(count * 4), 4).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute("iLook", new THREE.InstancedBufferAttribute(new Float32Array(count * 4), 4));
+    g.instanceCount = count;
+    return g;
+  }
+
+  // a pad: a disc with a notch, flat in xz
+  const padBase = new THREE.CircleGeometry(1, 32, 0.2, Math.PI * 2 - 0.4);
+  padBase.rotateX(-Math.PI / 2);
+  const PADS = 9;
+  const padGeo = floaterGeometry(padBase, PADS);
+  const padMat = new THREE.ShaderMaterial({
+    uniforms: common, side: THREE.DoubleSide,
+    vertexShader: FLOAT_VERT,
+    fragmentShader: `
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
+      varying vec2 vLocal; varying vec4 vLook; varying vec3 vWorld;
+      ${TONEMAP}
+      void main() {
+        float r = length(vLocal);
+        float ang = atan(vLocal.y, vLocal.x);
+        vec3 c = mix(vec3(0.09, 0.20, 0.06), vec3(0.17, 0.33, 0.09), smoothstep(0.0, 0.9, r)) * (0.85 + 0.3 * vLook.x);
+        c *= 1.0 - 0.18 * smoothstep(0.75, 0.98, abs(sin(ang * 9.0))) * smoothstep(0.1, 0.4, r);   // veins
+        c = mix(c, vec3(0.30, 0.20, 0.06), smoothstep(0.9, 1.0, r) * 0.6);                        // a browned rim
+        vec3 lit = c * (uAmbient + uSunCol * (0.6 + 0.4 * max(uSunDir.y, 0.0)));
+        lit += uSunCol * 0.08 * (1.0 - r);                                                        // the waxy sheen
+        float fog = 1.0 - exp(-uFogDensity * 0.4 * length(vWorld - cameraPosition));
+        gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+  const pads = new THREE.Mesh(padGeo, padMat);
+  pads.frustumCulled = false;
+  group.add(pads);
+
+  // a lotus flower: two rings of petals cupped upward, on some of the pads
+  function lotusGeometry() {
+    const pos = [], col = [];
+    const ring = (count, tilt, len, width, turn) => {
+      for (let i = 0; i < count; i++) {
+        const yaw = (i / count) * Math.PI * 2 + turn;
+        const pts = [];
+        for (let k = 0; k <= 6; k++) {
+          const u = k / 6, w = Math.sin(Math.PI * Math.pow(u, 0.8)) * width;
+          pts.push([u * len, w], [u * len, -w]);
+        }
+        const place = (u, v) => {
+          const x = u * Math.cos(tilt), y = u * Math.sin(tilt);
+          return [x * Math.cos(yaw) - v * Math.sin(yaw), y, x * Math.sin(yaw) + v * Math.cos(yaw)];
+        };
+        for (let k = 0; k < 6; k++) {
+          const a = pts[k * 2], b = pts[k * 2 + 1], c2 = pts[k * 2 + 2], d = pts[k * 2 + 3];
+          for (const p of [a, b, c2, b, d, c2]) { pos.push(...place(p[0], p[1])); col.push(p[0] / len); }
+        }
+      }
+    };
+    ring(8, 0.55, 0.42, 0.13, 0);
+    ring(6, 1.05, 0.34, 0.11, 0.4);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute("aU", new THREE.Float32BufferAttribute(col, 1));
+    return g;
+  }
+  const lotusBase = lotusGeometry();
+  const LOTUS = 3;
+  const lotusGeo = new THREE.InstancedBufferGeometry();
+  lotusGeo.setAttribute("position", lotusBase.attributes.position);
+  lotusGeo.setAttribute("aU", lotusBase.attributes.aU);
+  lotusGeo.setAttribute("iPose", new THREE.InstancedBufferAttribute(new Float32Array(LOTUS * 4), 4).setUsage(THREE.DynamicDrawUsage));
+  lotusGeo.setAttribute("iLook", new THREE.InstancedBufferAttribute(new Float32Array(LOTUS * 4), 4));
+  lotusGeo.instanceCount = LOTUS;
+  const lotusMat = new THREE.ShaderMaterial({
+    uniforms: common, side: THREE.DoubleSide,
+    vertexShader: FLOAT_VERT.replace("varying vec2 vLocal;", "attribute float aU; varying float vU; varying vec2 vLocal;").replace("vLocal = position.xz;", "vLocal = position.xz; vU = aU;"),
+    fragmentShader: `
+      uniform vec3 uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
+      varying float vU; varying vec2 vLocal; varying vec4 vLook; varying vec3 vWorld;
+      ${TONEMAP}
+      void main() {
+        vec3 c = mix(vec3(1.0, 0.96, 0.92), vec3(0.98, 0.52, 0.70), smoothstep(0.35, 1.0, vU));
+        vec3 lit = c * (uAmbient + uSunCol * 0.8) + uSunCol * 0.15 * vU;
+        float fog = 1.0 - exp(-uFogDensity * 0.4 * length(vWorld - cameraPosition));
+        gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+  const lotus = new THREE.Mesh(lotusGeo, lotusMat);
+  lotus.frustumCulled = false;
+  group.add(lotus);
+
+  // leaves and petals: a quad each, its shape cut out in the shader
+  const bitBase = new THREE.PlaneGeometry(1, 1);
+  bitBase.rotateX(-Math.PI / 2);
+  const BITS = 70;
+  const bitGeo = floaterGeometry(bitBase, BITS);
+  const bitMat = new THREE.ShaderMaterial({
+    uniforms: common, side: THREE.DoubleSide,
+    vertexShader: FLOAT_VERT,
+    fragmentShader: `
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
+      varying vec2 vLocal; varying vec4 vLook; varying vec3 vWorld;
+      ${TONEMAP}
+      void main() {
+        float u = vLocal.x + 0.5;               // along the leaf or petal, 0..1
+        float v = vLocal.y;
+        vec3 c;
+        if (vLook.x < 0.5) {
+          // a leaf: pointed at both ends, a darker vein down the middle, autumn colours
+          float hw = 0.42 * pow(sin(3.14159 * u), 0.9);
+          if (abs(v) > hw) discard;
+          vec3 a = mix(vec3(0.85, 0.62, 0.10), vec3(0.80, 0.25, 0.06), vLook.y);
+          c = mix(a, vec3(0.42, 0.25, 0.08), vLook.z * 0.6);
+          c *= 1.0 - 0.3 * (1.0 - smoothstep(0.0, 0.03, abs(v)));
+        } else {
+          // a petal: a rounded teardrop, white into pink
+          float hw = 0.38 * pow(sin(3.14159 * pow(u, 0.6)), 1.2);
+          if (abs(v) > hw) discard;
+          c = mix(vec3(1.0, 0.95, 0.93), vec3(0.97, 0.55, 0.72), u * (0.5 + 0.5 * vLook.y));
+        }
+        vec3 lit = c * (uAmbient + uSunCol * (0.55 + 0.45 * max(uSunDir.y, 0.0)));
+        float fog = 1.0 - exp(-uFogDensity * 0.4 * length(vWorld - cameraPosition));
+        gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+  const bits = new THREE.Mesh(bitGeo, bitMat);
+  bits.frustumCulled = false;
+  group.add(bits);
+
+  // ---- koi --------------------------------------------------------------------
+  function koiGeometry() {
+    const body = new THREE.SphereGeometry(1, 18, 10);
+    body.scale(0.5, 0.11, 0.15);
+    const b = body.toNonIndexed();
+    const pos = Array.from(b.attributes.position.array);
+    const nrm = Array.from(b.attributes.normal.array);
+    // tail fin and two side fins, thin and flat
+    const tri = (pts) => { for (const p of pts) { pos.push(...p); nrm.push(0, 1, 0); } };
+    tri([[-0.42, 0, 0], [-0.78, 0, 0.2], [-0.70, 0, 0], [-0.42, 0, 0], [-0.70, 0, 0], [-0.78, 0, -0.2]]);
+    tri([[0.18, -0.02, 0.1], [0.02, -0.03, 0.3], [0.05, -0.02, 0.1]]);
+    tri([[0.18, -0.02, -0.1], [0.05, -0.02, -0.1], [0.02, -0.03, -0.3]]);
+    const g = new THREE.InstancedBufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
+    return g;
+  }
+  const KOI = 5;
+  const koiGeo = koiGeometry();
+  koiGeo.setAttribute("iFish", new THREE.InstancedBufferAttribute(new Float32Array(KOI * 4), 4).setUsage(THREE.DynamicDrawUsage)); // x, z, heading, swim phase
+  koiGeo.setAttribute("iSeed", new THREE.InstancedBufferAttribute(new Float32Array(KOI * 2), 2));                               // pattern, size
+  koiGeo.instanceCount = KOI;
+  const koiMat = new THREE.ShaderMaterial({
+    uniforms: common, side: THREE.DoubleSide,
+    vertexShader: `
+      attribute vec4 iFish; attribute vec2 iSeed;
+      varying vec3 vLocal; varying vec2 vSeed; varying vec3 vN; varying vec3 vWorld;
+      void main() {
+        vec3 p = position;
+        // the body bends in a wave that grows toward the tail
+        float bend = sin(iFish.w - p.x * 5.5) * 0.11 * pow(max(0.6 - p.x, 0.0), 1.6);
+        p.z += bend;
+        p *= iSeed.y;
+        float c = cos(iFish.z), s = sin(iFish.z);
+        vec3 w = vec3(iFish.x + p.x * c - p.z * s, ${KOI_DEPTH.toFixed(2)} + p.y, iFish.y + p.x * s + p.z * c);
+        vWorld = w; vLocal = position; vSeed = iSeed;
+        vN = normalize(vec3(normal.x * c - normal.z * s, normal.y, normal.x * s + normal.z * c));
+        gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+      }`,
+    fragmentShader: `
+      uniform sampler2D uNoise; uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
+      varying vec3 vLocal; varying vec2 vSeed; varying vec3 vN; varying vec3 vWorld;
+      ${TONEMAP}
+      void main() {
+        float spots = texture2D(uNoise, vLocal.xz * vec2(0.55, 0.9) + vSeed.x * 7.0).r;
+        vec3 white = vec3(1.0, 0.97, 0.92), orange = vec3(1.0, 0.33, 0.03), black = vec3(0.05, 0.04, 0.04);
+        vec3 c = vSeed.x > 0.75 ? mix(orange, vec3(1.0, 0.62, 0.20), spots) : mix(white, orange, smoothstep(0.40, 0.46, spots));
+        if (vSeed.x > 0.4 && vSeed.x < 0.6) c = mix(c, black, smoothstep(0.66, 0.70, texture2D(uNoise, vLocal.xz * 3.0 + 2.0).g));
+        float lam = max(dot(normalize(vN), uSunDir), 0.0) * 0.6 + 0.4;
+        vec3 lit = c * (uAmbient * 1.3 + uSunCol * lam * 1.6);
+        float fog = 1.0 - exp(-uFogDensity * 0.4 * length(vWorld - cameraPosition));
+        gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+  const koi = new THREE.Mesh(koiGeo, koiMat);
+  koi.frustumCulled = false;
+  group.add(koi);
+
+  // ---- the CPU side: where the floaters and fish are ---------------------------
+  const rand = (() => { let s = 2024; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); })();
+  const view = { minX: -5, maxX: 5, minZ: -8, maxZ: 6 };
+  const floaters = [];
+  function makeFloater(kind) {
+    const pad = kind === "pad";
+    return {
+      kind, x: lerp(view.minX, view.maxX, rand()), z: lerp(view.minZ, view.maxZ, rand()),
+      vx: 0, vz: 0, rot: rand() * Math.PI * 2, spin: 0,
+      size: pad ? 0.38 + rand() * 0.28 : 0.3 + rand() * 0.16,
+      look: pad ? [rand(), 0, 0, 0] : [rand() < 0.55 ? 0 : 1, rand(), rand(), 0],
+    };
+  }
+  for (let i = 0; i < PADS; i++) floaters.push(makeFloater("pad"));
+  for (let i = 0; i < BITS; i++) floaters.push(makeFloater("bit"));
+  const padIndex = floaters.filter((f) => f.kind === "pad");
+  const bitIndex = floaters.filter((f) => f.kind === "bit");
+  const flowerPads = [0, 3, 6];
+  padIndex.forEach((p, i) => { padGeo.attributes.iLook.setXYZW(i, ...p.look); });
+  bitIndex.forEach((b, i) => { bitGeo.attributes.iLook.setXYZW(i, ...b.look); });
+  padGeo.attributes.iLook.needsUpdate = true; bitGeo.attributes.iLook.needsUpdate = true;
+
+  const fish = Array.from({ length: KOI }, (_, i) => ({
+    x: lerp(view.minX, view.maxX, rand()), z: lerp(view.minZ, view.maxZ, rand()),
+    a: rand() * Math.PI * 2, speed: 0.35, turn: 0, phase: rand() * 6, flee: 0, fx: 0, fz: 0,
+  }));
+  const KOI_LOOKS = [0.12, 0.30, 0.52, 0.82, 0.92];      // white and orange, white and orange, with black, orange, orange
+  fish.forEach((f, i) => koiGeo.attributes.iSeed.setXY(i, KOI_LOOKS[i % KOI_LOOKS.length], 0.95 + rand() * 0.4));
+  koiGeo.attributes.iSeed.needsUpdate = true;
+
+  // the part of the pond the camera sees, where floaters and fish are kept
+  function updateView() {
+    const pts = [];
+    for (const [x, y] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+      const d = new THREE.Vector3(x, y, 0.5).unproject(camera).sub(camera.position).normalize();
+      const t = d.y < -0.05 ? -camera.position.y / d.y : 30;
+      const p = camera.position.clone().addScaledVector(d, Math.min(t, 30));
+      pts.push(p);
+    }
+    view.minX = clamp(Math.min(...pts.map((p) => p.x)), -14, 0) + 0.6;
+    view.maxX = clamp(Math.max(...pts.map((p) => p.x)), 0, 14) - 0.6;
+    view.minZ = clamp(Math.min(...pts.map((p) => p.z)), -14, 0) + 0.6;
+    view.maxZ = clamp(Math.max(...pts.map((p) => p.z)), 0, 14) - 0.6;
+  }
+
+  const kicks = [];         // rings from taps and plucks, pushing floaters and scaring fish
+  function stepFloaters(dt, touches, time) {
+    for (const f of floaters) {
+      const pad = f.kind === "pad";
+      const reach = pad ? f.size + 0.55 : 0.6;
+      for (const t of touches) {
+        const dx = f.x - t.x, dz = f.z - t.z, d = Math.hypot(dx, dz);
+        if (d < reach && d > 1e-4) {
+          const push = (reach - d) / reach;
+          f.vx += (dx / d) * push * 5 * dt + t.dx * push * 3 * dt;
+          f.vz += (dz / d) * push * 5 * dt + t.dz * push * 3 * dt;
+          f.spin += (dx * t.dz - dz * t.dx) * push * 2 * dt;
+        }
+      }
+      for (const k of kicks) {
+        const dx = f.x - k.x, dz = f.z - k.z, d = Math.hypot(dx, dz);
+        if (d < 2.5 && d > 1e-4) { const s = k.amount * (1 - d / 2.5) / (pad ? 2.5 : 1); f.vx += (dx / d) * s; f.vz += (dz / d) * s; }
+      }
+      // a slow drift, as if the pond breathed
+      f.vx += Math.sin(f.z * 0.25 + time * 0.07) * 0.012 * dt;
+      f.vz += Math.cos(f.x * 0.21 + time * 0.05) * 0.012 * dt;
+      // back toward the part of the pond in view
+      if (f.x < view.minX) f.vx += (view.minX - f.x) * 0.6 * dt;
+      if (f.x > view.maxX) f.vx -= (f.x - view.maxX) * 0.6 * dt;
+      if (f.z < view.minZ) f.vz += (view.minZ - f.z) * 0.6 * dt;
+      if (f.z > view.maxZ) f.vz -= (f.z - view.maxZ) * 0.6 * dt;
+      const damp = Math.exp(-dt * (pad ? 0.9 : 1.3));
+      f.vx *= damp; f.vz *= damp; f.spin *= Math.exp(-dt * 1.5);
+      f.x += f.vx * dt; f.z += f.vz * dt; f.rot += f.spin * dt;
+    }
+    // pads do not overlap
+    for (let i = 0; i < padIndex.length; i++) for (let j = i + 1; j < padIndex.length; j++) {
+      const a = padIndex[i], b = padIndex[j];
+      const dx = b.x - a.x, dz = b.z - a.z, d = Math.hypot(dx, dz), min = a.size + b.size;
+      if (d < min && d > 1e-4) {
+        const p = (min - d) * 0.5, nx = dx / d, nz = dz / d;
+        a.x -= nx * p; a.z -= nz * p; b.x += nx * p; b.z += nz * p;
+      }
+    }
+    const pp = padGeo.attributes.iPose, bp = bitGeo.attributes.iPose, lp = lotusGeo.attributes.iPose;
+    padIndex.forEach((f, i) => pp.setXYZW(i, f.x, f.z, f.rot, f.size));
+    bitIndex.forEach((f, i) => bp.setXYZW(i, f.x, f.z, f.rot, f.size));
+    flowerPads.forEach((pi, i) => { const f = padIndex[pi]; lp.setXYZW(i, f.x + 0.05, f.z - 0.04, f.rot, 0.55 + f.size * 0.5); });
+    pp.needsUpdate = true; bp.needsUpdate = true; lp.needsUpdate = true;
+  }
+
+  function stepFish(dt, touches, time) {
+    for (let i = 0; i < fish.length; i++) {
+      const f = fish[i];
+      // wander
+      f.turn += (Math.sin(time * 0.37 + i * 2.1) * 0.6 + (rand() - 0.5) * 0.8) * dt;
+      f.turn *= Math.exp(-dt * 1.2);
+      let want = f.a + f.turn;
+      let speed = 0.32;
+      // curious: a finger resting on the water draws them in, slowly
+      for (const t of touches) {
+        const dx = t.x - f.x, dz = t.z - f.z, d = Math.hypot(dx, dz);
+        if (t.depth > 0.5 && d < 4.5 && d > 0.7) { want = steer(f.a, Math.atan2(dz, dx), 0.5 * dt * 3); speed = 0.25; }
+      }
+      // a ring nearby: flee
+      for (const k of kicks) {
+        const dx = f.x - k.x, dz = f.z - k.z, d = Math.hypot(dx, dz);
+        if (d < 2.8) { f.flee = 1; f.fx = dx; f.fz = dz; }
+      }
+      if (f.flee > 0.02) { want = steer(f.a, Math.atan2(f.fz, f.fx), 6 * dt); speed = 0.32 + 1.6 * f.flee; f.flee *= Math.exp(-dt * 1.4); }
+      // stay in view
+      const cx = (view.minX + view.maxX) / 2, cz = (view.minZ + view.maxZ) / 2;
+      if (f.x < view.minX + 0.5 || f.x > view.maxX - 0.5 || f.z < view.minZ + 0.5 || f.z > view.maxZ - 0.5)
+        want = steer(want, Math.atan2(cz - f.z, cx - f.x), 1.5 * dt);
+      // keep apart
+      for (let j = 0; j < fish.length; j++) if (j !== i) {
+        const o = fish[j], dx = f.x - o.x, dz = f.z - o.z, d = Math.hypot(dx, dz);
+        if (d < 0.8 && d > 1e-4) want = steer(want, Math.atan2(dz, dx), 0.8 * dt);
+      }
+      f.a = steer(f.a, want, Math.min(1, dt * 2.5));
+      f.speed = lerp(f.speed, speed, 1 - Math.exp(-dt * 2));
+      f.x += Math.cos(f.a) * f.speed * dt;
+      f.z += Math.sin(f.a) * f.speed * dt;
+      f.phase += dt * (3.5 + f.speed * 9);
+      koiGeo.attributes.iFish.setXYZW(i, f.x, f.z, f.a, f.phase);
+    }
+    koiGeo.attributes.iFish.needsUpdate = true;
+  }
+  // turn heading a toward target by a share of the way, the short way round
+  function steer(a, target, amount) {
+    let d = target - a;
+    while (d > Math.PI) d -= Math.PI * 2;
+    while (d < -Math.PI) d += Math.PI * 2;
+    return a + d * clamp(amount, 0, 1);
+  }
+
+  // ---- the frame ----------------------------------------------------------------
+  let substepCarry = 0;
+  function update(dt, touches, time) {
+    common.uTime.value = time;
+    common.uMusic.value.copy(music);
+    updateView();
+    if (simOK) {
+      // the waves run at a fixed 120 steps a second whatever the frame rate
+      substepCarry += dt * 120;
+      const steps = Math.min(4, Math.floor(substepCarry));
+      substepCarry -= steps;
+      for (let s = 0; s < steps; s++) {
+        let n = 0;
+        if (s === 0) for (const q of queued) { if (n < MAX_IMP) impulses[n++].set(...q); }
+        // a moving finger pushes the water ahead of it: the wake
+        for (const t of touches) {
+          if (n >= MAX_IMP) break;
+          const sp = Math.min(t.speed, 6);
+          if (sp > 0.05) impulses[n++].set(t.x, t.z, 0.3 * (1 + t.depth * 0.5), -0.0005 * sp * (1 + t.depth));
+        }
+        simMat.uniforms.uCount.value = n;
+        simMat.uniforms.uPrev.value = simA.texture;
+        passQuad.material = simMat;
+        renderer.setRenderTarget(simB);
+        renderer.render(passScene, passCam);
+        simMat.uniforms.uInit.value = 0;
+        [simA, simB] = [simB, simA];
+      }
+      renderer.setRenderTarget(null);
+      simUniforms.uSim.value = simA.texture;
+    }
+    queued.length = 0;
+    stepFloaters(dt, touches, time);
+    stepFish(dt, touches, time);
+    kicks.length = 0;
+  }
+
+  return {
+    id: "water", name: "Vatten", group,
+    sound: { voice: 2, ring: 6, wet: 0.48 },
+    touchHeight: 0.0, glowHeight: 0.06,
+    resize() { updateView(); },
+    update,
+    tune() {},
+    enter() { if (simOK) simMat.uniforms.uInit.value = 1; updateView(); },
+    exit() {},
+    tap(f) {
+      impulse(f.world.x, f.world.z, 0.42, -0.22);
+      kicks.push({ x: f.world.x, z: f.world.z, amount: 1.6 });
+      burst(f.world, [0.75, 0.9, 1.0], 0.5, "splash");
+    },
+    pluck(f, col, vel) {
+      impulse(f.world.x, f.world.z, 0.28, -0.025 * vel);
+      kicks.push({ x: f.world.x, z: f.world.z, amount: 0.25 });
+    },
+    stats() { return { waves: simOK }; },
+  };
+})();
+
+
+const SCENES = [meadowScene, waterScene];
+let activeScene = meadowScene;
+
+// Switch scene: its surface replaces the last one, fingers meet it at its
+// height, and its sound (strings, ring time, room) comes in. A sound the player
+// changed in a scene is remembered for that scene.
+function setScene(id) {
+  const next = SCENES.find((sc) => sc.id === id) || meadowScene;
+  if (activeScene !== next) { scene.remove(activeScene.group); activeScene.exit(); }
+  activeScene = next;
+  if (!next.group.parent) scene.add(next.group);
+  next.enter();
+  next.resize();
+  plane.constant = -next.touchHeight;
+  settings.scene = next.id;
+  const snd = settings.sound[next.id] || next.sound;
+  settings.voice = snd.voice;
+  settings.ring = snd.ring;
+  if (wetGain) wetGain.gain.setTargetAtTime(next.sound.wet, ctx.currentTime, 0.4);
+  if (ctx) sendStrings();
+  syncSoundControls();
+  document.querySelectorAll(".scene-pick").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.scene === next.id)));
+  const chip = document.getElementById("scene-next");
+  if (chip) chip.textContent = "Scen: " + next.name;
+  saveSettings();
+}
+function syncSoundControls() {
+  const v = document.getElementById("voice"), r = document.getElementById("ring");
+  if (v && v.options.length) v.value = String(settings.voice);
+  if (r) r.value = settings.ring;
+}
+function rememberSound() { settings.sound[activeScene.id] = { voice: settings.voice, ring: settings.ring }; }
+
 // ---- sound ---------------------------------------------------------------------
-let ctx = null, node = null, mainEngine = null, analyser = null, freqData = null;
+let ctx = null, node = null, mainEngine = null, analyser = null, freqData = null, wetGain = null;
 const music = new THREE.Vector3();
 
 function post(c) {
@@ -1139,7 +1860,8 @@ async function startAudio() {
   }
   const master = ctx.createGain(); master.gain.value = 1.0;
   const dry = ctx.createGain(); dry.gain.value = 0.9;
-  const wet = ctx.createGain(); wet.gain.value = 0.32;
+  const wet = ctx.createGain(); wet.gain.value = activeScene.sound.wet;
+  wetGain = wet;
   const reverb = ctx.createConvolver(); reverb.buffer = impulse(ctx, 3.2);
   source.connect(dry).connect(master);
   source.connect(reverb).connect(wet).connect(master);
@@ -1168,7 +1890,6 @@ function listenToMusic(dt) {
     const rate = now > music[key] ? 0.08 : 0.6;
     music[key] = lerp(music[key], now, 1 - Math.exp(-dt / rate));
   }
-  grassUniforms.uMusic.value.copy(music);
 }
 
 // ---- fingers on the plates ----------------------------------------------------
@@ -1199,7 +1920,7 @@ function newFinger(id) {
 }
 
 const ray = new THREE.Raycaster();
-const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -GRASS_TOP * 0.8);
+const plane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -GRASS_TOP * 0.8);   // setScene moves it to the scene's surface
 function worldAt(sx, sy, out) {
   ray.setFromCamera(new THREE.Vector2(sx * 2 - 1, 1 - sy * 2), camera);
   return ray.ray.intersectPlane(plane, out);
@@ -1257,7 +1978,7 @@ function pluckString(f, k) {
 
 function onPluck(f, vel) {
   const col = PLATE_COLORS[f.plate];
-  burst(f.world, col, vel);
+  activeScene.pluck(f, col, vel);
   ripples.push({ x: f.world.x, z: f.world.z, age: 0, strength: vel, col });
   if (ripples.length > MAX_RIPPLE) ripples.shift();
   plateGlow[f.plate] = 1;
@@ -1286,6 +2007,7 @@ canvas.addEventListener("pointerdown", (e) => {
   worldAt(sx, sy, f.world);
   fingers.set(e.pointerId, f);
   strum(f, sx, sy, e.timeStamp, true);
+  activeScene.tap(f);
   e.preventDefault();
 });
 canvas.addEventListener("pointermove", (e) => {
@@ -1421,21 +2143,19 @@ function resize() {
   renderer.setSize(w, h, false);
   camera.aspect = w / Math.max(1, h);
   camera.updateProjectionMatrix();
-  buildField();
+  for (const sc of SCENES) sc.resize();
 }
 window.addEventListener("resize", resize);
 
 // ---- the frame ---------------------------------------------------------------------
 let started = false, last = performance.now(), clockTime = 0;
 let deepestDepth = 0;
-let fpsTime = 0, fpsFrames = 0, tuned = 0;
-const bendTouch = bendMat.uniforms.uTouch.value, bendDrag = bendMat.uniforms.uDrag.value;
+let fpsTime = 0, fpsFrames = 0;
 
 function frame(now) {
   const dt = Math.min(0.1, (now - last) / 1000);
   last = now;
   clockTime += dt;
-  grassUniforms.uTime.value = clockTime;
   placeCamera(dt, clockTime);
 
   // each finger sinks the longer it stays down
@@ -1447,35 +2167,27 @@ function frame(now) {
   }
   deepestDepth = deepest;
 
-  // stamp the fingers into the bend field
-  let n = 0;
+  // hand the fingers to the scene; each finger's glow sits on its surface
+  const touches = [];
   const viewScale = clamp(camera.position.y / 11, 0.6, 1.6);
   for (const f of fingers.values()) {
-    if (n >= MAX_TOUCH) break;
     const sp = f.vel.length();
-    const drag = sp > 1e-3 ? f.vel.clone().multiplyScalar(clamp(sp / 3, 0, 1) / sp) : new THREE.Vector2();
-    bendTouch[n].set(f.world.x, f.world.z, (0.5 + 0.35 * depthFor(f)) * viewScale, 0.15 + 0.85 * depthFor(f));
-    bendDrag[n].set(drag.x, drag.y, 0.45, 0);
+    const k = sp > 1e-3 ? clamp(sp / 3, 0, 1) / sp : 0;
+    touches.push({ x: f.world.x, z: f.world.z, radius: (0.5 + 0.35 * depthFor(f)) * viewScale,
+                   press: 0.15 + 0.85 * depthFor(f), dx: f.vel.x * k, dz: f.vel.y * k, strength: 0.45,
+                   speed: sp, depth: depthFor(f), finger: f });
     f.vel.multiplyScalar(Math.exp(-dt / 0.15));
-    f.sprite.position.set(f.world.x, GRASS_TOP + 0.15, f.world.z);
+    f.sprite.position.set(f.world.x, activeScene.glowHeight, f.world.z);
     f.sprite.material.opacity = lerp(f.sprite.material.opacity, 0.25 + 0.6 * depthFor(f), 0.2);
     f.sprite.scale.setScalar((0.6 + 1.1 * depthFor(f)) * viewScale);
-    n++;
   }
-  bendMat.uniforms.uCount.value = n;
   for (let i = leaving.length - 1; i >= 0; i--) {
     const f = leaving[i];
     f.sprite.material.opacity *= Math.exp(-dt / 0.2);
     if (f.sprite.material.opacity < 0.01) { scene.remove(f.sprite); f.sprite.material.dispose(); leaving.splice(i, 1); }
   }
-  bendMat.uniforms.uDecay.value = 1 - Math.exp(-dt / 2.6);
-  bendMat.uniforms.uPrev.value = bendA.texture;
-  passQuad.material = bendMat;
-  renderer.setRenderTarget(bendB);
-  renderer.render(passScene, passCam);
-  bendMat.uniforms.uInit.value = 0;
-  [bendA, bendB] = [bendB, bendA];
-  grassUniforms.uBend.value = bendA.texture;
+  listenToMusic(dt);
+  activeScene.update(dt, touches, clockTime);
 
   // ripples
   const rings = rippleMat.uniforms.uRings.value, cols = rippleMat.uniforms.uColors.value;
@@ -1491,7 +2203,6 @@ function frame(now) {
   renderer.setRenderTarget(null);
 
   stepPollen(dt);
-  listenToMusic(dt);
 
   for (let k = 0; k < CHORDS.length; k++) {
     let want = 0;
@@ -1512,11 +2223,8 @@ function frame(now) {
   fpsTime += dt; fpsFrames++;
   if (fpsTime > 2.5) {
     const fps = fpsFrames / fpsTime;
-    if (tuned < 6) {
-      if (fps < 42) { setBudget(budget * 0.7); tuned++; }
-      else if (fps > 57 && budget < MAX_BLADES) { setBudget(budget * 1.25); tuned++; }
-    }
-    window.__tg = { fps: Math.round(fps), blades: budget, worklet: !!node, floatTargets, depth: +deepestDepth.toFixed(2) };
+    activeScene.tune(fps);
+    window.__tg = { fps: Math.round(fps), scene: activeScene.id, ...activeScene.stats(), worklet: !!node, floatTargets, depth: +deepestDepth.toFixed(2) };
     fpsTime = 0; fpsFrames = 0;
   }
   requestAnimationFrame(frame);
@@ -1530,7 +2238,7 @@ $("begin").addEventListener("click", async () => {
   try { await startAudio(); } catch (e) { showError("Ljudet kunde inte starta: " + e.message); }
   try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (e) {}
   const hint = $("hint");
-  hint.textContent = "Dra i sidled · höjden byter ackord · låt fingret ligga kvar för djupare klang";
+  hint.textContent = "Dra i sidled · tryck för en ton · höjden byter ackord";
   hint.hidden = false;
   setTimeout(() => { hint.style.opacity = "0"; }, 6500);
 });
@@ -1613,9 +2321,9 @@ VOICE_NAMES.forEach((name, i) => $("voice").add(new Option(name, i, false, i ===
 $("ring").value = settings.ring;
 $("voice").addEventListener("change", (e) => {
   settings.voice = parseInt(e.target.value, 10);
-  saveSettings(); sendStrings(); previewPlate(dronePlate >= 0 ? dronePlate : middlePlate());
+  rememberSound(); saveSettings(); sendStrings(); previewPlate(dronePlate >= 0 ? dronePlate : middlePlate());
 });
-$("ring").addEventListener("input", (e) => { settings.ring = parseFloat(e.target.value); saveSettings(); sendStrings(); });
+$("ring").addEventListener("input", (e) => { settings.ring = parseFloat(e.target.value); rememberSound(); saveSettings(); sendStrings(); });
 $("ring").addEventListener("change", () => previewPlate(dronePlate >= 0 ? dronePlate : middlePlate()));
 $("drone-on").checked = settings.drone;
 $("drone-level").value = settings.droneLevel;
@@ -1624,12 +2332,21 @@ $("drone-on").addEventListener("change", (e) => { settings.drone = e.target.chec
 $("drone-level").addEventListener("input", (e) => { settings.droneLevel = parseFloat(e.target.value); if (!settings.drone && settings.droneLevel > 0) { settings.drone = true; $("drone-on").checked = true; } saveSettings(); sendDrone(); });
 $("drone-bright").addEventListener("input", (e) => { settings.droneBright = parseFloat(e.target.value); saveSettings(); sendDrone(); });
 
+for (const sc of SCENES) {
+  const b = document.createElement("button");
+  b.className = "chip scene-pick"; b.type = "button"; b.textContent = sc.name; b.dataset.scene = sc.id;
+  b.addEventListener("click", () => setScene(sc.id));
+  $("scene-picks").appendChild(b);
+}
+
+$("scene-next").addEventListener("click", () => setScene(SCENES[(SCENES.indexOf(activeScene) + 1) % SCENES.length].id));
 $("view").addEventListener("click", () => goToView(viewIndex + 1, false));
 $("clock").addEventListener("click", () => { $("timerow").hidden = !$("timerow").hidden; });
 $("hour").addEventListener("input", (e) => applyHour(parseFloat(e.target.value)));
 
 goToView(0, true);
 applyHour(15);
+setScene(settings.scene);
 resize();
 requestAnimationFrame((t) => { last = t; frame(t); });
 </script>
