@@ -2285,6 +2285,7 @@ const sandScene = (() => {
   const RECT = new THREE.Vector3(-SIZE / 2, -SIZE / 2, SIZE);
   const MAX_STROKE = 12, MAX_HEAP = 8;
   const TEXEL = SIZE / RES;
+  const MAX_DIG = 1.25, MAX_HEAP_RADIUS = 2.0;   // a heap that wide stands about 0.85 m
   const REPOSE = 0.67;                       // tan of the angle dry sand lies at, about 34 degrees
   const WIND = new THREE.Vector2(0.62, 0.78); // downwind, in x and z; the ripples' crests lie across it
   const TONEMAP = "vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }";
@@ -2297,9 +2298,9 @@ const sandScene = (() => {
     });
   }
   let fieldA = fieldTarget(), fieldB = fieldTarget();
-  // 8-bit targets store height * 0.8 + 0.5, so pits 0.6 m deep and heaps as tall both fit
-  const ENC = floatTargets ? "h" : "(h * 0.8 + 0.5)";
-  const DEC = floatTargets ? "v" : "((v - 0.5) / 0.8)";
+  // 8-bit targets store height * 0.3 + 0.5, so pits 1.5 m deep and heaps as tall both fit
+  const ENC = floatTargets ? "h" : "(h * 0.3 + 0.5)";
+  const DEC = floatTargets ? "v" : "((v - 0.5) / 0.3)";
   const strokes = Array.from({ length: MAX_STROKE }, () => new THREE.Vector4());   // from x, z, to x, z
   const shapes = Array.from({ length: MAX_STROKE }, () => new THREE.Vector4());    // groove radius, groove depth, rim height, pit depth
   const heaps = Array.from({ length: MAX_HEAP }, () => new THREE.Vector4());       // x, z, radius, height
@@ -2589,25 +2590,27 @@ const sandScene = (() => {
     for (const t of touches) {
       let st = hands.get(t.finger);
       if (!st) { st = { dig: 0, load: 0 }; hands.set(t.finger, st); }
-      const radius = 0.12 * viewScale * (1 + 0.6 * t.depth);
-      const depth = 0.035 + 0.045 * t.depth;
+      // a light touch draws a fine line; pressed in, the finger is a wide deep blade
+      const radius = 0.12 * viewScale * (1 + 0.9 * t.depth);
+      const depth = 0.035 + 0.12 * t.depth;
       const mx = t.x - t.px, mz = t.z - t.pz, moved = Math.hypot(mx, mz);
       if (t.speed < 0.3) {
-        // resting: it digs, slower the deeper it is, down to about half a metre
+        // resting: it digs, slower the deeper it is, down to about a metre and a quarter
         const before = st.dig;
-        st.dig = Math.min(0.55, st.dig + dt * 0.13 * t.depth * (1 - 0.5 * st.dig / 0.55));
+        st.dig = Math.min(MAX_DIG, st.dig + dt * 0.32 * t.depth * (1 - 0.5 * st.dig / MAX_DIG));
         if (spray && st.dig > before + 1e-4) burst({ x: t.x, y: 0, z: t.z }, SAND, 0.2 + st.dig * 0.6, "sand", 2);
       } else {
         // moving: it leaves its pit behind, and pushes the sand it cuts ahead of it
         const before = st.dig;
         st.dig *= Math.exp(-moved / 0.35);
         const out = 2.9 * (before ** 3 - st.dig ** 3);         // the cone it climbed out of
-        st.load = st.load * Math.exp(-moved / 5) + out + moved * (4 / 3) * radius * depth * (0.15 + 0.85 * t.depth);
+        // a dragged hand gathers more than the groove it leaves, and spills little
+        st.load = st.load * Math.exp(-moved / 12) + out + 2 * moved * (4 / 3) * radius * depth * (0.15 + 0.85 * t.depth);
       }
       addStroke(t.px, t.pz, t.x, t.z, radius, depth, depth * 0.45 + st.dig * 0.3, st.dig);
       if (moved > 1e-4 && st.load > 0) {
         // a heap about as steep as sand stands, holding what the finger carries
-        const a = Math.min(1.1, Math.cbrt(st.load / 0.45));
+        const a = Math.min(MAX_HEAP_RADIUS, Math.cbrt(st.load / 0.45));
         if (a > 0.08) {
           const ahead = radius + st.dig / (REPOSE * 0.9) + a * 0.7;
           addHeap(t.x + mx / moved * ahead, t.z + mz / moved * ahead, a, 0.43 * a);
