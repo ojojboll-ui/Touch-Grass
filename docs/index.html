@@ -697,7 +697,7 @@ const floatTargets = !!(renderer.capabilities.isWebGL2 &&
   (gl.getExtension("EXT_color_buffer_float") || gl.getExtension("EXT_color_buffer_half_float")));
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 400);
+const camera = new THREE.PerspectiveCamera(50, 1, 0.5, 400);   // near 0.5: the views are all metres away, and depth precision keeps floaters from flickering
 
 // ---- noise texture: world-space colour patches and the wind's gusts ----------
 // r dry patches, g lushness, b fine variation, a gusts. Periodic, so it tiles
@@ -1383,7 +1383,8 @@ const waterScene = (() => {
       vec2 r = vec2(lp.x * c.x - lp.y * c.y, lp.x * c.y + lp.y * c.x);
       vec2 xz = iPose.xy + r;
       vec2 sl = slopeAt(iPose.xy);
-      float y = heightAt(iPose.xy) + dot(sl, r) + 0.012 + position.y * iPose.w;
+      // iLook.w lifts a floater: leaves lie in layers, and on a pad when they drift onto one
+      float y = heightAt(iPose.xy) + dot(sl, r) + 0.012 + iLook.w + position.y * iPose.w;
       vWorld = vec3(xz.x, y, xz.y);
       vLocal = position.xz; vLook = iLook;
       gl_Position = projectionMatrix * viewMatrix * vec4(vWorld, 1.0);
@@ -1394,7 +1395,7 @@ const waterScene = (() => {
     g.index = base.index;
     g.setAttribute("position", base.attributes.position);
     g.setAttribute("iPose", new THREE.InstancedBufferAttribute(new Float32Array(count * 4), 4).setUsage(THREE.DynamicDrawUsage));
-    g.setAttribute("iLook", new THREE.InstancedBufferAttribute(new Float32Array(count * 4), 4));
+    g.setAttribute("iLook", new THREE.InstancedBufferAttribute(new Float32Array(count * 4), 4).setUsage(THREE.DynamicDrawUsage));
     g.instanceCount = count;
     return g;
   }
@@ -1402,7 +1403,7 @@ const waterScene = (() => {
   // a pad: a disc with a notch, flat in xz
   const padBase = new THREE.CircleGeometry(1, 32, 0.2, Math.PI * 2 - 0.4);
   padBase.rotateX(-Math.PI / 2);
-  const PADS = 9;
+  const PADS = 20;
   const padGeo = floaterGeometry(padBase, PADS);
   const padMat = new THREE.ShaderMaterial({
     uniforms: common, side: THREE.DoubleSide,
@@ -1456,7 +1457,7 @@ const waterScene = (() => {
     return g;
   }
   const lotusBase = lotusGeometry();
-  const LOTUS = 3;
+  const LOTUS = 6;
   const lotusGeo = new THREE.InstancedBufferGeometry();
   lotusGeo.setAttribute("position", lotusBase.attributes.position);
   lotusGeo.setAttribute("aU", lotusBase.attributes.aU);
@@ -1484,7 +1485,7 @@ const waterScene = (() => {
   // leaves and petals: a quad each, its shape cut out in the shader
   const bitBase = new THREE.PlaneGeometry(1, 1);
   bitBase.rotateX(-Math.PI / 2);
-  const BITS = 70;
+  const BITS = 150;
   const bitGeo = floaterGeometry(bitBase, BITS);
   const bitMat = new THREE.ShaderMaterial({
     uniforms: common, side: THREE.DoubleSide,
@@ -1520,71 +1521,155 @@ const waterScene = (() => {
   group.add(bits);
 
   // ---- koi --------------------------------------------------------------------
-  function koiGeometry() {
-    const body = new THREE.SphereGeometry(1, 18, 10);
-    body.scale(0.5, 0.11, 0.15);
-    const b = body.toNonIndexed();
-    const pos = Array.from(b.attributes.position.array);
-    const nrm = Array.from(b.attributes.normal.array);
-    // tail fin and two side fins, thin and flat
-    const tri = (pts) => { for (const p of pts) { pos.push(...p); nrm.push(0, 1, 0); } };
-    tri([[-0.42, 0, 0], [-0.78, 0, 0.2], [-0.70, 0, 0], [-0.42, 0, 0], [-0.70, 0, 0], [-0.78, 0, -0.2]]);
-    tri([[0.18, -0.02, 0.1], [0.02, -0.03, 0.3], [0.05, -0.02, 0.1]]);
-    tri([[0.18, -0.02, -0.1], [0.05, -0.02, -0.1], [0.02, -0.03, -0.3]]);
-    const g = new THREE.InstancedBufferGeometry();
-    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
-    g.setAttribute("normal", new THREE.Float32BufferAttribute(nrm, 3));
-    return g;
+  // Each fish is a chain of spine joints that follow the head along the path it
+  // swims (follow-the-leader), so the whole body curves through a turn as a real
+  // spine does. On top of that a swimming wave runs from head to tail, barely at
+  // the head and widest at the tail, and the pectoral fins paddle. The mesh is
+  // laid out in spine coordinates (s along the body from the snout, 0, to the tail
+  // tip, 1; side; up) and placed on the CPU every frame: a few thousand vertices.
+  const KOI = 5, JOINTS = 12;
+  const KOI_LOOKS = ["kohaku", "kohaku", "showa", "ogon", "tancho"];
+
+  // half-width of the body at s (0 snout .. 0.8 tail root), as a koi: a blunt
+  // rounded head, a long deep body, a slim tail root
+  function koiWidth(sx) {
+    const t = clamp(sx / 0.8, 0, 1);
+    return 0.115 * Math.pow(Math.sin(Math.PI * 0.5 * Math.min(t / 0.24, 1)), 0.55) * (1 - 0.82 * smooth(0.42, 1.0, t));
   }
-  const KOI = 5;
-  const koiGeo = koiGeometry();
-  koiGeo.setAttribute("iFish", new THREE.InstancedBufferAttribute(new Float32Array(KOI * 4), 4).setUsage(THREE.DynamicDrawUsage)); // x, z, heading, swim phase
-  koiGeo.setAttribute("iSeed", new THREE.InstancedBufferAttribute(new Float32Array(KOI * 2), 2));                               // pattern, size
-  koiGeo.instanceCount = KOI;
+
+  function koiRest() {
+    const S = [], SIDE = [], UP = [], FLAP = [], PART = [], idx = [];
+    const vert = (sv, side, up, flap, part) => { S.push(sv); SIDE.push(side); UP.push(up); FLAP.push(flap); PART.push(part); return S.length - 1; };
+    // the body: rings round the spine
+    const RINGS = 30, AROUND = 16;
+    const tip = vert(0, 0, 0.01, 0, 0);
+    let prev = null;
+    for (let r = 1; r <= RINGS; r++) {
+      const sv = 0.8 * r / RINGS, w = koiWidth(sv), h = w * 1.2;
+      const ring = [];
+      for (let k = 0; k < AROUND; k++) {
+        const a = (k / AROUND) * Math.PI * 2;
+        const up = Math.sin(a) * h * (Math.sin(a) < 0 ? 0.82 : 1.0);
+        ring.push(vert(sv, Math.cos(a) * w, up, 0, 0));
+      }
+      for (let k = 0; k < AROUND; k++) {
+        const k2 = (k + 1) % AROUND;
+        if (!prev) idx.push(tip, ring[k2], ring[k]);
+        else idx.push(prev[k], prev[k2], ring[k2], prev[k], ring[k2], ring[k]);
+      }
+      prev = ring;
+    }
+    // the tail fin: a forked fan spreading sideways, thin and flexible
+    const K = 8, U = 6, fan = [];
+    for (let k = 0; k <= K; k++) {
+      const row = [];
+      for (let u = -U; u <= U; u++) {
+        const uu = u / U, kk = k / K;
+        const sv = 0.78 + 0.22 * kk * (1 - 0.42 * (1 - Math.abs(uu)));     // the middle is shorter: the fork
+        const half = 0.018 + 0.15 * Math.pow(kk, 0.8);
+        row.push(vert(sv, uu * half, 0.004, 0, 1));
+      }
+      if (fan.length) {
+        const a = fan[fan.length - 1];
+        for (let u = 0; u < row.length - 1; u++) idx.push(a[u], a[u + 1], row[u + 1], a[u], row[u + 1], row[u]);
+      }
+      fan.push(row);
+    }
+    // the pectoral fins: out to each side behind the head, paddling
+    for (const side of [1, -1]) {
+      // a small rounded paddle: a fan from the root out to a soft edge
+      const w = koiWidth(0.24) * 0.85;
+      const root = vert(0.235, side * w, -0.03, 0, 1);
+      const edge = [];
+      for (let k = 0; k <= 6; k++) {
+        const a = -0.5 + (k / 6) * 1.6;                       // from forward-out round to back
+        edge.push(vert(0.235 + 0.075 * Math.sin(a) + 0.03, side * (w + 0.075 * Math.cos(a) + 0.01), -0.04, 1, 1));
+      }
+      for (let k = 0; k < 6; k++) idx.push(root, edge[k], edge[k + 1]);
+    }
+    // the dorsal fin: a low ridge along the back
+    for (let k = 0; k < 8; k++) {
+      const s0 = 0.28 + 0.34 * k / 8, s1 = 0.28 + 0.34 * (k + 1) / 8;
+      const h0 = koiWidth(s0) * 1.2, h1 = koiWidth(s1) * 1.2;
+      const bell = (sv) => 0.05 * Math.sin(Math.PI * (sv - 0.28) / 0.34);
+      const a = vert(s0, 0, h0, 0, 2), b = vert(s1, 0, h1, 0, 2);
+      const c = vert(s1, 0, h1 + bell(s1), 0, 2), d = vert(s0, 0, h0 + bell(s0), 0, 2);
+      idx.push(a, b, c, a, c, d);
+    }
+    return { S, SIDE, UP, FLAP, PART, idx, count: S.length };
+  }
+  const REST = koiRest();
+
+  // the coat: a koi's pattern from its variety, laid on the rest pose
+  function koiColours(look, seed) {
+    const col = new Float32Array(REST.count * 3);
+    const white = [1.0, 0.97, 0.92], red = [0.95, 0.20, 0.03], gold = [1.0, 0.60, 0.10], black = [0.05, 0.04, 0.04];
+    const noise = (x, y) => {
+      const v = (a, b) => { const h = Math.sin(a * 127.1 + b * 311.7 + seed * 74.7) * 43758.5453; return h - Math.floor(h); };
+      const xi = Math.floor(x), yi = Math.floor(y), fx = x - xi, fy = y - yi;
+      const u = fx * fx * (3 - 2 * fx), w = fy * fy * (3 - 2 * fy);
+      return lerp(lerp(v(xi, yi), v(xi + 1, yi), u), lerp(v(xi, yi + 1), v(xi + 1, yi + 1), u), w);
+    };
+    for (let i = 0; i < REST.count; i++) {
+      const sv = REST.S[i], side = REST.SIDE[i], up = REST.UP[i], part = REST.PART[i];
+      const n = noise(sv * 7, side * 9 + up * 4) * 0.7 + noise(sv * 15, side * 20) * 0.3;
+      let c = white;
+      if (look === "ogon") c = mix3(gold, [1.0, 0.78, 0.35], n);
+      else if (look === "tancho") c = (sv > 0.05 && sv < 0.17 && up > 0) ? red : white;
+      else {
+        c = n > 0.45 ? red : white;
+        if (look === "showa" && noise(sv * 11 + 5, side * 13) > 0.6) c = black;
+      }
+      if (part > 0) c = mix3(c, [1.0, 0.95, 0.88], part === 1 ? 0.55 : 0.3);   // fins are paler, nearly clear
+      col[i * 3] = c[0]; col[i * 3 + 1] = c[1]; col[i * 3 + 2] = c[2];
+    }
+    return col;
+  }
+  function mix3(a, b, t) { return [lerp(a[0], b[0], t), lerp(a[1], b[1], t), lerp(a[2], b[2], t)]; }
+
   const koiMat = new THREE.ShaderMaterial({
     uniforms: common, side: THREE.DoubleSide,
     vertexShader: `
-      attribute vec4 iFish; attribute vec2 iSeed;
-      varying vec3 vLocal; varying vec2 vSeed; varying vec3 vN; varying vec3 vWorld;
+      attribute vec3 color;
+      varying vec3 vColor; varying vec3 vN; varying vec3 vWorld;
       void main() {
-        vec3 p = position;
-        // the body bends in a wave that grows toward the tail
-        float bend = sin(iFish.w - p.x * 5.5) * 0.11 * pow(max(0.6 - p.x, 0.0), 1.6);
-        p.z += bend;
-        p *= iSeed.y;
-        float c = cos(iFish.z), s = sin(iFish.z);
-        vec3 w = vec3(iFish.x + p.x * c - p.z * s, ${KOI_DEPTH.toFixed(2)} + p.y, iFish.y + p.x * s + p.z * c);
-        vWorld = w; vLocal = position; vSeed = iSeed;
-        vN = normalize(vec3(normal.x * c - normal.z * s, normal.y, normal.x * s + normal.z * c));
-        gl_Position = projectionMatrix * viewMatrix * vec4(w, 1.0);
+        vColor = color; vN = normal; vWorld = position;
+        gl_Position = projectionMatrix * viewMatrix * vec4(position, 1.0);
       }`,
     fragmentShader: `
-      uniform sampler2D uNoise; uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
-      varying vec3 vLocal; varying vec2 vSeed; varying vec3 vN; varying vec3 vWorld;
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
+      varying vec3 vColor; varying vec3 vN; varying vec3 vWorld;
       ${TONEMAP}
       void main() {
-        float spots = texture2D(uNoise, vLocal.xz * vec2(0.55, 0.9) + vSeed.x * 7.0).r;
-        vec3 white = vec3(1.0, 0.97, 0.92), orange = vec3(1.0, 0.33, 0.03), black = vec3(0.05, 0.04, 0.04);
-        vec3 c = vSeed.x > 0.75 ? mix(orange, vec3(1.0, 0.62, 0.20), spots) : mix(white, orange, smoothstep(0.40, 0.46, spots));
-        if (vSeed.x > 0.4 && vSeed.x < 0.6) c = mix(c, black, smoothstep(0.66, 0.70, texture2D(uNoise, vLocal.xz * 3.0 + 2.0).g));
-        float lam = max(dot(normalize(vN), uSunDir), 0.0) * 0.6 + 0.4;
-        vec3 lit = c * (uAmbient * 1.3 + uSunCol * lam * 1.6);
+        vec3 n = normalize(vN);
+        if (!gl_FrontFacing) n = -n;
+        float lam = max(dot(n, uSunDir), 0.0) * 0.6 + 0.4;
+        vec3 lit = vColor * (uAmbient * 1.3 + uSunCol * lam * 1.6);
         float fog = 1.0 - exp(-uFogDensity * 0.4 * length(vWorld - cameraPosition));
         gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
       }`,
   });
-  const koi = new THREE.Mesh(koiGeo, koiMat);
-  koi.frustumCulled = false;
-  group.add(koi);
+  const koiMeshes = [];
+  for (let i = 0; i < KOI; i++) {
+    const g = new THREE.BufferGeometry();
+    g.setAttribute("position", new THREE.BufferAttribute(new Float32Array(REST.count * 3), 3).setUsage(THREE.DynamicDrawUsage));
+    g.setAttribute("color", new THREE.BufferAttribute(koiColours(KOI_LOOKS[i % KOI_LOOKS.length], i * 3.7 + 1), 3));
+    g.setIndex(REST.idx);
+    const m = new THREE.Mesh(g, koiMat);
+    m.frustumCulled = false;
+    group.add(m);
+    koiMeshes.push(m);
+  }
 
   // ---- the CPU side: where the floaters and fish are ---------------------------
   const rand = (() => { let s = 2024; return () => ((s = (s * 1664525 + 1013904223) >>> 0) / 4294967296); })();
-  const view = { minX: -5, maxX: 5, minZ: -8, maxZ: 6 };
+  const view = { minX: -5, maxX: 5, minZ: -8, maxZ: 6 };   // what the camera sees now (the koi stay in it)
+  const area = { minX: -8, maxX: 8, minZ: -12, maxZ: 6 };  // what any view sees (the floaters spread over it)
   const floaters = [];
   function makeFloater(kind) {
     const pad = kind === "pad";
     return {
-      kind, x: lerp(view.minX, view.maxX, rand()), z: lerp(view.minZ, view.maxZ, rand()),
+      kind, x: lerp(area.minX, area.maxX, rand()), z: lerp(area.minZ, area.maxZ, rand()),
       vx: 0, vz: 0, rot: rand() * Math.PI * 2, spin: 0,
       size: pad ? 0.38 + rand() * 0.28 : 0.3 + rand() * 0.16,
       look: pad ? [rand(), 0, 0, 0] : [rand() < 0.55 ? 0 : 1, rand(), rand(), 0],
@@ -1594,18 +1679,23 @@ const waterScene = (() => {
   for (let i = 0; i < BITS; i++) floaters.push(makeFloater("bit"));
   const padIndex = floaters.filter((f) => f.kind === "pad");
   const bitIndex = floaters.filter((f) => f.kind === "bit");
-  const flowerPads = [0, 3, 6];
+  const flowerPads = [0, 3, 6, 9, 12, 15];
   padIndex.forEach((p, i) => { padGeo.attributes.iLook.setXYZW(i, ...p.look); });
   bitIndex.forEach((b, i) => { bitGeo.attributes.iLook.setXYZW(i, ...b.look); });
   padGeo.attributes.iLook.needsUpdate = true; bitGeo.attributes.iLook.needsUpdate = true;
 
-  const fish = Array.from({ length: KOI }, (_, i) => ({
-    x: lerp(view.minX, view.maxX, rand()), z: lerp(view.minZ, view.maxZ, rand()),
-    a: rand() * Math.PI * 2, speed: 0.35, turn: 0, phase: rand() * 6, flee: 0, fx: 0, fz: 0,
-  }));
-  const KOI_LOOKS = [0.12, 0.30, 0.52, 0.82, 0.92];      // white and orange, white and orange, with black, orange, orange
-  fish.forEach((f, i) => koiGeo.attributes.iSeed.setXY(i, KOI_LOOKS[i % KOI_LOOKS.length], 0.95 + rand() * 0.4));
-  koiGeo.attributes.iSeed.needsUpdate = true;
+  const fish = Array.from({ length: KOI }, (_, i) => {
+    const f = {
+      x: lerp(view.minX, view.maxX, rand()), z: lerp(view.minZ, view.maxZ, rand()),
+      a: rand() * Math.PI * 2, speed: 0.35, turn: 0, phase: rand() * 6, flee: 0, fx: 0, fz: 0,
+      length: 0.95 + rand() * 0.4, joints: [],
+    };
+    for (let j = 0; j < JOINTS; j++) {
+      const back = (j / (JOINTS - 1)) * f.length;
+      f.joints.push([f.x - Math.cos(f.a) * back, f.z - Math.sin(f.a) * back]);
+    }
+    return f;
+  });
 
   // the part of the pond the camera sees, where floaters and fish are kept
   function updateView() {
@@ -1621,6 +1711,30 @@ const waterScene = (() => {
     view.minZ = clamp(Math.min(...pts.map((p) => p.z)), -14, 0) + 0.6;
     view.maxZ = clamp(Math.max(...pts.map((p) => p.z)), 0, 14) - 0.6;
   }
+
+  function updateArea() {
+    // before layout the window can be 0 wide: an aspect of 0 makes every corner NaN
+    let aspect = window.innerWidth / Math.max(1, window.innerHeight);
+    if (!(aspect > 0.2)) aspect = 0.6;
+    let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9;
+    for (const v of VIEWS) {
+      const cam = new THREE.PerspectiveCamera(v.fov, aspect, 0.1, 100);
+      cam.position.set(...v.pos); cam.lookAt(...v.look); cam.updateMatrixWorld(); cam.updateProjectionMatrix();
+      for (const [x, y] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) {
+        const d = new THREE.Vector3(x, y, 0.5).unproject(cam).sub(cam.position).normalize();
+        const t = d.y < -0.05 ? -cam.position.y / d.y : 30;
+        const q = cam.position.clone().addScaledVector(d, Math.min(t, 30));
+        minX = Math.min(minX, q.x); maxX = Math.max(maxX, q.x); minZ = Math.min(minZ, q.z); maxZ = Math.max(maxZ, q.z);
+      }
+    }
+    area.minX = clamp(minX, -16, 0) + 0.5; area.maxX = clamp(maxX, 0, 16) - 0.5;
+    area.minZ = clamp(minZ, -16, 0) + 0.5; area.maxZ = clamp(maxZ, 0, 16) - 0.5;
+    for (const f of floaters) if (!Number.isFinite(f.x) || !Number.isFinite(f.z)) {
+      f.x = lerp(area.minX, area.maxX, rand()); f.z = lerp(area.minZ, area.maxZ, rand()); f.vx = f.vz = 0;
+    }
+  }
+  updateArea();
+  for (const f of floaters) { f.x = lerp(area.minX, area.maxX, rand()); f.z = lerp(area.minZ, area.maxZ, rand()); }
 
   const kicks = [];         // rings from taps and plucks, pushing floaters and scaring fish
   function stepFloaters(dt, touches, time) {
@@ -1643,11 +1757,11 @@ const waterScene = (() => {
       // a slow drift, as if the pond breathed
       f.vx += Math.sin(f.z * 0.25 + time * 0.07) * 0.012 * dt;
       f.vz += Math.cos(f.x * 0.21 + time * 0.05) * 0.012 * dt;
-      // back toward the part of the pond in view
-      if (f.x < view.minX) f.vx += (view.minX - f.x) * 0.6 * dt;
-      if (f.x > view.maxX) f.vx -= (f.x - view.maxX) * 0.6 * dt;
-      if (f.z < view.minZ) f.vz += (view.minZ - f.z) * 0.6 * dt;
-      if (f.z > view.maxZ) f.vz -= (f.z - view.maxZ) * 0.6 * dt;
+      // back toward the part of the pond the views see
+      if (f.x < area.minX) f.vx += (area.minX - f.x) * 0.6 * dt;
+      if (f.x > area.maxX) f.vx -= (f.x - area.maxX) * 0.6 * dt;
+      if (f.z < area.minZ) f.vz += (area.minZ - f.z) * 0.6 * dt;
+      if (f.z > area.maxZ) f.vz -= (f.z - area.maxZ) * 0.6 * dt;
       const damp = Math.exp(-dt * (pad ? 0.9 : 1.3));
       f.vx *= damp; f.vz *= damp; f.spin *= Math.exp(-dt * 1.5);
       f.x += f.vx * dt; f.z += f.vz * dt; f.rot += f.spin * dt;
@@ -1661,10 +1775,28 @@ const waterScene = (() => {
         a.x -= nx * p; a.z -= nz * p; b.x += nx * p; b.z += nz * p;
       }
     }
+    // leaves and petals nudge each other apart, and each lies at its own height
+    // so two that do touch never flicker through each other
+    for (let i = 0; i < bitIndex.length; i++) {
+      const a = bitIndex[i];
+      for (let j = i + 1; j < bitIndex.length; j++) {
+        const b = bitIndex[j], dx = b.x - a.x, dz = b.z - a.z, d2 = dx * dx + dz * dz, min = (a.size + b.size) * 0.4;
+        if (d2 < min * min && d2 > 1e-8) {
+          const d = Math.sqrt(d2), push = (min - d) * 0.25, nx = dx / d, nz = dz / d;
+          a.x -= nx * push; a.z -= nz * push; b.x += nx * push; b.z += nz * push;
+        }
+      }
+      let onPad = 0;
+      for (const pad of padIndex) if (Math.hypot(a.x - pad.x, a.z - pad.z) < pad.size * 0.95) onPad = 1;
+      a.lift = lerp(a.lift || 0, 0.006 + 0.005 * (i % 7) + onPad * 0.035, 0.2);
+      bitGeo.attributes.iLook.setW(i, a.lift);
+    }
+    bitGeo.attributes.iLook.needsUpdate = true;
     const pp = padGeo.attributes.iPose, bp = bitGeo.attributes.iPose, lp = lotusGeo.attributes.iPose;
     padIndex.forEach((f, i) => pp.setXYZW(i, f.x, f.z, f.rot, f.size));
     bitIndex.forEach((f, i) => bp.setXYZW(i, f.x, f.z, f.rot, f.size));
-    flowerPads.forEach((pi, i) => { const f = padIndex[pi]; lp.setXYZW(i, f.x + 0.05, f.z - 0.04, f.rot, 0.55 + f.size * 0.5); });
+    flowerPads.forEach((pi, i) => { const f = padIndex[pi]; lp.setXYZW(i, f.x + 0.05, f.z - 0.04, f.rot, 0.55 + f.size * 0.5); lotusGeo.attributes.iLook.setW(i, 0.01); });
+    lotusGeo.attributes.iLook.needsUpdate = true;
     pp.needsUpdate = true; bp.needsUpdate = true; lp.needsUpdate = true;
   }
 
@@ -1696,14 +1828,62 @@ const waterScene = (() => {
         const o = fish[j], dx = f.x - o.x, dz = f.z - o.z, d = Math.hypot(dx, dz);
         if (d < 0.8 && d > 1e-4) want = steer(want, Math.atan2(dz, dx), 0.8 * dt);
       }
-      f.a = steer(f.a, want, Math.min(1, dt * 2.5));
+      // a koi turns no tighter than about half its length: cap the turn rate by speed
+      const maxTurn = (0.5 + f.speed * 1.4) * dt;
+      let dA = steer(f.a, want, Math.min(1, dt * 2.5)) - f.a;
+      f.a += clamp(dA, -maxTurn, maxTurn);
       f.speed = lerp(f.speed, speed, 1 - Math.exp(-dt * 2));
       f.x += Math.cos(f.a) * f.speed * dt;
       f.z += Math.sin(f.a) * f.speed * dt;
-      f.phase += dt * (3.5 + f.speed * 9);
-      koiGeo.attributes.iFish.setXYZW(i, f.x, f.z, f.a, f.phase);
+      f.phase += dt * (3.0 + f.speed * 8);
+      followSpine(f);
+      placeKoi(koiMeshes[i], f, time);
     }
-    koiGeo.attributes.iFish.needsUpdate = true;
+  }
+
+  // follow-the-leader: each joint keeps its distance from the one ahead of it,
+  // along the line between them, so the body lies on the path the head took
+  function followSpine(f) {
+    const seg = f.length / (JOINTS - 1), J = f.joints;
+    J[0][0] = f.x; J[0][1] = f.z;
+    for (let j = 1; j < JOINTS; j++) {
+      const dx = J[j][0] - J[j - 1][0], dz = J[j][1] - J[j - 1][1], d = Math.hypot(dx, dz) || 1e-6;
+      J[j][0] = J[j - 1][0] + (dx / d) * seg;
+      J[j][1] = J[j - 1][1] + (dz / d) * seg;
+    }
+  }
+
+  // the rest pose laid onto the spine, with the swimming wave and paddling fins
+  const spineP = new Float32Array(2), spineT = new Float32Array(2);
+  function spineAt(f, sv) {
+    const J = f.joints, x = clamp(sv, 0, 1) * (JOINTS - 1);
+    const i = Math.min(Math.floor(x), JOINTS - 2), t = x - i;
+    spineP[0] = lerp(J[i][0], J[i + 1][0], t); spineP[1] = lerp(J[i][1], J[i + 1][1], t);
+    // the direction toward the head, eased between neighbouring segments
+    const tan = (k) => { const a = J[Math.max(k, 0)], b = J[Math.min(k + 1, JOINTS - 1)]; const dx = a[0] - b[0], dz = a[1] - b[1], d = Math.hypot(dx, dz) || 1e-6; return [dx / d, dz / d]; };
+    const t0 = tan(i - (t < 0.5 ? 1 : 0)), t1 = tan(i + (t < 0.5 ? 0 : 1));
+    const w = t < 0.5 ? t + 0.5 : t - 0.5;
+    let tx = lerp(t0[0], t1[0], w), tz = lerp(t0[1], t1[1], w);
+    const d = Math.hypot(tx, tz) || 1e-6;
+    spineT[0] = tx / d; spineT[1] = tz / d;
+  }
+  function placeKoi(mesh, f, time) {
+    const pos = mesh.geometry.attributes.position.array;
+    const swim = 0.04 + 0.09 * clamp(f.speed / 1.2, 0, 1);
+    const scale = f.length / 0.95;
+    for (let v = 0; v < REST.count; v++) {
+      const sv = REST.S[v];
+      spineAt(f, sv);
+      const nx = -spineT[1], nz = spineT[0];                       // to the fish's left
+      // the swimming wave: one wavelength along the body, growing toward the tail
+      let side = REST.SIDE[v] * scale + swim * (0.12 + 0.88 * sv * sv) * Math.sin(f.phase - sv * 6.3);
+      if (REST.FLAP[v] > 0) side += Math.sign(REST.SIDE[v]) * 0.03 * Math.sin(f.phase * 0.6 + 1.0);
+      pos[v * 3] = spineP[0] + nx * side;
+      pos[v * 3 + 1] = KOI_DEPTH + REST.UP[v] * scale;
+      pos[v * 3 + 2] = spineP[1] + nz * side;
+    }
+    mesh.geometry.attributes.position.needsUpdate = true;
+    mesh.geometry.computeVertexNormals();
   }
   // turn heading a toward target by a share of the way, the short way round
   function steer(a, target, amount) {
@@ -1754,7 +1934,7 @@ const waterScene = (() => {
     id: "water", name: "Vatten", group,
     sound: { voice: 2, ring: 6, wet: 0.48 },
     touchHeight: 0.0, glowHeight: 0.06,
-    resize() { updateView(); },
+    resize() { updateView(); updateArea(); },
     update,
     tune() {},
     enter() { if (simOK) simMat.uniforms.uInit.value = 1; updateView(); },

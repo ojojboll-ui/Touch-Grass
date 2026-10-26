@@ -266,7 +266,7 @@ const floatTargets = !!(renderer.capabilities.isWebGL2 &&
   (gl.getExtension("EXT_color_buffer_float") || gl.getExtension("EXT_color_buffer_half_float")));
 
 const scene = new THREE.Scene();
-const camera = new THREE.PerspectiveCamera(50, 1, 0.05, 400);
+const camera = new THREE.PerspectiveCamera(50, 1, 0.5, 400);   // near 0.5: the views are all metres away, and depth precision keeps floaters from flickering
 
 // ---- noise texture: world-space colour patches and the wind's gusts ----------
 // r dry patches, g lushness, b fine variation, a gusts. Periodic, so it tiles
