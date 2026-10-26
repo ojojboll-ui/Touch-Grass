@@ -220,6 +220,8 @@ function TouchGrassEngine() {
     { name: "HARPA",    wave: SAW,   pw: 0.0,  filterMultiple: 5.0,  decayScale: 1.15, attack: 0.0030, detune: 2.0 },
     { name: "VIBRAFON", wave: SINE,  pw: 0.0,  filterMultiple: 12.0, decayScale: 1.60, attack: 0.0040, detune: 1.5 },
     { name: "GITARR",   wave: PULSE, pw: 0.20, filterMultiple: 9.0,  decayScale: 0.70, attack: 0.0015, detune: 4.0 },
+    // not a pluck: each string is a short bow stroke on Chordtroller's bowed string
+    { name: "CELLO", bowed: true, decayScale: 1.0 },
   ];
 
   const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -453,12 +455,186 @@ function TouchGrassEngine() {
     }
   }
 
+  // ---- the cello: Chordtroller's bowed string (dsp/BowedString.h, StringEngine.h) ----
+  // A digital waveguide with the bow as a friction junction (Smith and Woodhouse's
+  // hyperbolic friction, solved exactly as a quadratic, hysteresis kept). Ported
+  // line by line; what differs is only the playing: here every plucked string is
+  // a short stroke, the bow set down, drawn for a while, lifted, and the string
+  // left to ring. The lessons that made it play clean carry over: loss as a fixed
+  // share per period, the loop's lowpass at a multiple of the pitch, force from
+  // the speed the bow is asked for, every stroke leaning in from a third of the
+  // limit, and the string run at twice the sample rate.
+
+  class FractionalDelay {
+    constructor(maxDelay) {
+      let size = 16;
+      while (size < maxDelay + 8) size <<= 1;
+      this.buf = new Float32Array(size); this.mask = size - 1; this.w = 0;
+    }
+    clear() { this.buf.fill(0); }
+    push(x) { this.buf[this.w] = x; this.w = (this.w + 1) & this.mask; }
+    // four-point Lagrange, so a moving read point does not wobble the partials
+    read(delay) {
+      delay = clamp(delay, 2, this.mask - 4);
+      const whole = delay | 0, f = delay - whole, b = this.buf, m = this.mask, w = this.w;
+      const ym1 = b[(w - (whole - 1)) & m], y0 = b[(w - whole) & m], y1 = b[(w - whole - 1) & m], y2 = b[(w - whole - 2) & m];
+      const fm1 = f + 1, f1 = f - 1, f2 = f - 2;
+      return ym1 * (-f * f1 * f2 / 6) + y0 * (fm1 * f1 * f2 * 0.5) + y1 * (-fm1 * f * f2 * 0.5) + y2 * (fm1 * f * f1 / 6);
+    }
+  }
+
+  const MU_S = 0.8, MU_D = 0.3, MU_SPAN = 0.5, SLIP_KNEE = 0.08;
+  class BowedString {
+    constructor(sr) {
+      this.sr = sr;
+      const longest = ((sr / 20) | 0) + 8;
+      this.toFinger = new FractionalDelay(longest);
+      this.toBridge = new FractionalDelay(longest);
+      this.fingerLength = 100; this.bridgeLength = 10; this.betaNow = 0.1;
+      this.loopGain = 0.99; this.pole = 0.2; this.lowpassDelay = 0;
+      this.reset();
+    }
+    reset() { this.toFinger.clear(); this.toBridge.clear(); this.lp = 0; this.sticking = false; }
+    // loss as log10 of the gain per round trip; the loop lowpass's delay is taken
+    // off the finger side so the string is not flat
+    setLosses(hz, logLoss, lowpassHz) {
+      hz = Math.max(hz, 20);
+      this.loopGain = Math.pow(10, -logLoss);
+      this.pole = Math.exp(-2 * PI * Math.min(lowpassHz, 0.45 * this.sr) / this.sr);
+      const w = 2 * PI * hz / this.sr;
+      this.lowpassDelay = Math.atan2(this.pole * Math.sin(w), 1 - this.pole * Math.cos(w)) / w;
+    }
+    setTuning(hz, bowPosition) {
+      const period = this.sr / clamp(hz, 20, this.sr / 12);
+      this.bridgeLength = clamp(bowPosition * period, 2.5, period * 0.4);
+      this.fingerLength = Math.max(2.5, period - this.bridgeLength - this.lowpassDelay);
+      this.betaNow = this.bridgeLength / period;
+    }
+    process(bowVelocity, bowForce, restDamping) {
+      const atBridge = this.toBridge.read(this.bridgeLength);
+      const fromFinger = -this.toFinger.read(this.fingerLength);
+      this.lp = (1 - this.pole) * atBridge + this.pole * this.lp;
+      const fromBridge = -this.loopGain * this.lp;
+      const incoming = fromFinger + fromBridge;
+      const added = this.friction(bowVelocity, bowForce, incoming) - restDamping * incoming;
+      this.toFinger.push(fromBridge + added);
+      this.toBridge.push(fromFinger + added);
+      return atBridge;
+    }
+    friction(vb, k, vh) {
+      if (k <= 0) { this.sticking = false; return 0; }
+      const want = vb - vh, a = Math.abs(want), sgn = want >= 0 ? 1 : -1;
+      const canStick = a <= k * MU_S;
+      if (this.sticking && canStick) return want;
+      const b = SLIP_KNEE - a + k * MU_D, c = SLIP_KNEE * (k * MU_S - a), disc = b * b - 4 * c;
+      if (disc >= 0) {
+        const x = 0.5 * (-b + Math.sqrt(disc));
+        if (x > 0) { this.sticking = false; return sgn * (a - x); }
+      }
+      this.sticking = true;          // no slipping solution left: the hair has caught the string
+      return want;
+    }
+  }
+
+  // The cello's body: Chordtroller's violin plate modes scaled to a cello.
+  class StringBody {
+    constructor(sr) {
+      this.sr = sr;
+      const MODES = [[275, 14, 0.90, 0], [405, 18, 0.30, 0], [460, 22, 1.10, 0], [540, 22, 1.00, 0], [700, 16, 0.45, 0],
+                     [860, 16, 0.40, 0], [1050, 14, 0.45, 0], [1320, 12, 0.40, 0], [1650, 10, 0.40, 1], [2100, 6, 0.60, 1],
+                     [2650, 6, 0.70, 1], [3300, 6, 0.45, 1], [4600, 4, 0.22, 1]];
+      const low = 0.42, high = 0.62;                 // CELLO: plate modes and the bridge hill
+      this.modes = MODES.map(([hz, q, gain, hill]) => {
+        hz = Math.min(hz * (hill ? high : low), 0.45 * sr);
+        const w = 2 * PI * hz / sr, alpha = Math.sin(w) / (2 * q), a0 = 1 + alpha;
+        return { b0: alpha / a0, b2: -alpha / a0, a1: -2 * Math.cos(w) / a0, a2: (1 - alpha) / a0, gain, z1: 0, z2: 0 };
+      });
+      const w = 2 * PI * (190 * low) / sr, alpha = Math.sin(w) / (2 * 0.7071), cw = Math.cos(w), a0 = 1 + alpha;
+      this.hp = { b0: (1 + cw) * 0.5 / a0, b1: -(1 + cw) / a0, b2: (1 + cw) * 0.5 / a0, a1: -2 * cw / a0, a2: (1 - alpha) / a0, x1: 0, x2: 0, y1: 0, y2: 0 };
+      this.lp = 0;
+      this.lpc = 1 - Math.exp(-2 * PI * Math.min(7500 * high, 0.45 * sr) / sr);
+    }
+    process(x) {
+      const h = this.hp;
+      const direct = h.b0 * x + h.b1 * h.x1 + h.b2 * h.x2 - h.a1 * h.y1 - h.a2 * h.y2;
+      h.x2 = h.x1; h.x1 = x; h.y2 = h.y1; h.y1 = direct;
+      let sum = direct * 0.35;
+      for (const m of this.modes) {
+        const y = m.b0 * x + m.z1;
+        m.z1 = -m.a1 * y + m.z2;
+        m.z2 = m.b2 * x - m.a2 * y;
+        sum += y * m.gain;
+      }
+      this.lp += (sum - this.lp) * this.lpc;
+      return this.lp;
+    }
+  }
+
+  const OVERSAMPLE = 2;
+  class CelloVoice {
+    constructor(sr) { this.sr = sr; this.string = new BowedString(sr * OVERSAMPLE); this.active = false; this.note = -1; this.stamp = 0; }
+    start(note, velocity, bright, holdSeconds, stamp) {
+      while (note > 79) note -= 12;              // above the cello's reach: an octave down
+      const hz = 440 * Math.pow(2, (note - 69) / 12);
+      if (!this.active || this.note !== note) this.string.reset();
+      this.note = note; this.stamp = stamp; this.active = true;
+      const loss = 0.003 * Math.max(1, 200 / hz);              // below 200 Hz the loss per period grows
+      this.string.setLosses(hz, loss, Math.min(hz * (8 + 6 * clamp(bright, 0, 1)), 5000));
+      this.string.setTuning(hz, 0.1);
+      this.vbTarget = 0.07 + 0.15 * clamp(velocity, 0, 1);      // metres a second
+      this.vb = this.vb || 0;
+      this.bowCoef = 1 - Math.exp(-hz / (6 * this.sr));         // up to speed over about six periods
+      this.settle = 0;
+      this.settleCoef = 1 - Math.exp(-hz / (30 * this.sr));     // leans in over thirty periods
+      this.holdLeft = Math.round(holdSeconds * this.sr);
+      this.bowing = true;
+      this.level = 0.02;
+    }
+    process() {
+      if (this.bowing && --this.holdLeft <= 0) this.bowing = false;
+      this.vb += ((this.bowing ? this.vbTarget : 0) - this.vb) * this.bowCoef;
+      this.settle += (1 - this.settle) * this.settleCoef;
+      // force from the speed asked for, not the speed reached; from 0.35 to 0.55 of Schelleng's limit
+      const k = this.bowing ? (0.35 + 0.2 * this.settle) * this.vbTarget / (this.string.betaNow * MU_SPAN) : 0;
+      let out = 0;
+      for (let i = 0; i < OVERSAMPLE; i++) out += this.string.process(this.vb, k, 0);
+      out *= 1 / OVERSAMPLE;
+      this.level = Math.max(Math.abs(out), this.level * 0.9997);
+      if (!this.bowing && this.level < 2e-4) this.active = false;
+      return out;
+    }
+  }
+
+  class CelloSection {
+    constructor(sr, voices) {
+      this.voices = Array.from({ length: voices }, () => new CelloVoice(sr));
+      this.body = new StringBody(sr);
+      this.dcIn = 0; this.dcOut = 0; this.dcCoef = 1 - 2 * PI * 12 / sr;
+    }
+    start(note, velocity, bright, hold, stamp) {
+      let v = this.voices.find((x) => x.active && x.note === note) || this.voices.find((x) => !x.active);
+      if (!v) { v = this.voices[0]; for (const x of this.voices) if (x.stamp < v.stamp) v = x; }
+      v.start(note, velocity, bright, hold, stamp);
+    }
+    allOff() { for (const v of this.voices) { v.bowing = false; v.active = false; v.string.reset(); } }
+    process() {
+      let sum = 0, any = false;
+      for (const v of this.voices) if (v.active) { sum += v.process(); any = true; }
+      const y = this.body.process(sum);
+      // the loop carries a little DC after a stroke
+      this.dcOut = y - this.dcIn + this.dcCoef * this.dcOut; this.dcIn = y;
+      return any || Math.abs(this.dcOut) > 1e-6 ? this.dcOut : 0;
+    }
+  }
+
   // ---- GrassEngine --------------------------------------------------------------
   const STRING_GAIN = 0.38, DRONE_GAIN = 1.1;
 
   class GrassEngine {
     constructor(sr, pluckVoices = 48) {
       this.sr = sr;
+      this.cello = new CelloSection(sr, pluckVoices >= 48 ? 8 : 6);
+      this.celloGain = 0.46;
       this.plucks = Array.from({ length: pluckVoices }, () => new PluckVoice(sr));
       this.drone = Array.from({ length: 8 }, () => new JunoVoice(sr));
       this.ensemble = new Ensemble(sr);
@@ -491,7 +667,7 @@ function TouchGrassEngine() {
       if (this.pending.length >= 128) return;
       this.pending.push({ note, vel: clamp(velocity, 0, 1), left: Math.max(0, delaySamples | 0), bright });
     }
-    setVoice(i) { this.voiceIndex = ((i % 4) + 4) % 4; this.updateDecay(); }
+    setVoice(i) { const n = VOICES.length; this.voiceIndex = ((i % n) + n) % n; this.updateDecay(); }
     setRing(s) { this.ringSeconds = clamp(s, 0.2, 30); this.updateDecay(); }
     setDroneLevel(v) { this.droneTarget = clamp(v, 0, 1); }
     setDroneBrightness(v) { this.droneCutoff = clamp(v, 0, 1); }
@@ -499,7 +675,7 @@ function TouchGrassEngine() {
     setEnsembleMix(m) { this.ensemble.mix = clamp(m, 0, 1); }
     setMaster(g) { this.masterTarget = clamp(g, 0, 2); }
     setTone(t) { this.toneTarget = clamp(t, 0, 1); }
-    allOff() { this.pending.length = 0; for (const v of this.plucks) v.stopQuickly(); for (const v of this.drone) v.noteOff(); this.chord = null; }
+    allOff() { this.pending.length = 0; this.cello.allOff(); for (const v of this.plucks) v.stopQuickly(); for (const v of this.drone) v.noteOff(); this.chord = null; }
     activePlucks() { let n = 0; for (const v of this.plucks) if (v.active) n++; return n; }
 
     updateDecay() {
@@ -509,6 +685,11 @@ function TouchGrassEngine() {
     }
     startNote(note, vel, bright = 1) {
       if (note < 0 || note > 127) return;
+      if (VOICES[this.voiceIndex].bowed) {
+        // a bow stroke as long as a third of the ring time asks, then the string rings
+        this.cello.start(note, vel, bright, clamp(this.ringSeconds * 0.3, 0.25, 3), ++this.stamp);
+        return;
+      }
       const freq = 440 * Math.pow(2, (note - 69) / 12);
       this.allocate(note).start(freq, vel, this.decayCoef, VOICES[this.voiceIndex], note, ++this.stamp, bright);
     }
@@ -552,6 +733,7 @@ function TouchGrassEngine() {
         if (this.pending.length) this.firePending();
         let strings = 0;
         for (const v of this.plucks) if (v.active) strings += v.process();
+        strings += this.cello.process() * this.celloGain;
 
         this.tone += (this.toneTarget - this.tone) * 0.002;
         if ((this.toneTick++ & 15) === 0) {
@@ -601,7 +783,7 @@ function TouchGrassEngine() {
     }
   }
 
-  return { GrassEngine, plate, VOICES };
+  return { GrassEngine, plate, VOICES, CelloVoice };
 }
 
 // The AudioWorklet side: a processor that owns one engine and takes commands
@@ -660,10 +842,10 @@ const settings = (() => {
     if (saved && saved.sound && typeof saved.sound === "object") {
       for (const id in saved.sound) {
         const v = saved.sound[id];
-        if (v && Number.isInteger(v.voice) && Number.isFinite(v.ring)) s.sound[id] = { voice: clamp(v.voice, 0, 3), ring: clamp(v.ring, 0.8, 10) };
+        if (v && Number.isInteger(v.voice) && Number.isFinite(v.ring)) s.sound[id] = { voice: clamp(v.voice, 0, 4), ring: clamp(v.ring, 0.8, 10) };
       }
     }
-    if (saved && Number.isInteger(saved.voice)) s.voice = clamp(saved.voice, 0, 3);
+    if (saved && Number.isInteger(saved.voice)) s.voice = clamp(saved.voice, 0, 4);
     if (saved && Number.isFinite(saved.ring)) s.ring = clamp(saved.ring, 0.8, 10);
     if (saved && typeof saved.drone === "boolean") s.drone = saved.drone;
     if (saved && Number.isFinite(saved.droneLevel)) s.droneLevel = clamp(saved.droneLevel, 0, 1);
@@ -840,9 +1022,11 @@ let pollenNext = 0;
 
 // kind "pollen": light motes that drift up and away on the breeze.
 // kind "splash": droplets thrown up from water that fall back and vanish into it.
-function burst(at, rgb, strength, kind = "pollen") {
-  const splash = kind === "splash";
-  const count = splash ? 22 : 14;
+// kind "sand": grains kicked up that fall back onto the sand.
+function burst(at, rgb, strength, kind = "pollen", count) {
+  const splash = kind === "splash" || kind === "sand";
+  const grains = kind === "sand";
+  count = count || (splash ? 22 : 14);
   for (let k = 0; k < count; k++) {
     const i = pollenNext; pollenNext = (pollenNext + 1) % POLLEN;
     const a = Math.random() * Math.PI * 2, r = Math.random() * (splash ? 0.12 : 0.25);
@@ -850,10 +1034,13 @@ function burst(at, rgb, strength, kind = "pollen") {
     if (splash) {
       const out = (0.3 + 0.9 * Math.random()) * (0.5 + strength);
       pPos[i * 3 + 1] = at.y + 0.02;
-      pVel[i * 3] = Math.cos(a) * out; pVel[i * 3 + 1] = 1.2 + 1.8 * Math.random() * (0.4 + strength); pVel[i * 3 + 2] = Math.sin(a) * out;
+      const up = grains ? 0.5 + 1.2 * Math.random() * (0.4 + strength) : 1.2 + 1.8 * Math.random() * (0.4 + strength);
+      const side = grains ? out * 0.5 : out;
+      pVel[i * 3] = Math.cos(a) * side; pVel[i * 3 + 1] = up; pVel[i * 3 + 2] = Math.sin(a) * side;
       pLife[i] = 0.9 + Math.random() * 0.6; pGrav[i] = -7.5; pDrag[i] = 0.15;
       const m = 0.8 + 0.2 * Math.random();
-      pCol[i * 3] = lerp(rgb[0], 1, 0.75) * m; pCol[i * 3 + 1] = lerp(rgb[1], 1, 0.75) * m; pCol[i * 3 + 2] = lerp(rgb[2], 1, 0.8) * m;
+      const toward = grains ? 0.15 : 0.75;
+      pCol[i * 3] = lerp(rgb[0], 1, toward) * m; pCol[i * 3 + 1] = lerp(rgb[1], 1, toward) * m; pCol[i * 3 + 2] = lerp(rgb[2], 1, toward + 0.05) * m;
     } else {
       pPos[i * 3 + 1] = at.y + 0.1 + Math.random() * 0.2;
       pVel[i * 3] = Math.cos(a) * 0.3 * Math.random(); pVel[i * 3 + 1] = 0.25 + 0.5 * Math.random() * strength; pVel[i * 3 + 2] = Math.sin(a) * 0.3 * Math.random();
@@ -1988,7 +2175,246 @@ const waterScene = (() => {
 })();
 
 
-const SCENES = [meadowScene, waterScene];
+// ---- scene: sand ------------------------------------------------------------------
+// Fine glittering sand, as in a zen garden or an Etch A Sketch: a finger draws a
+// groove that stays, with the sand it moved heaped along both sides; a tap
+// leaves a pit and kicks up grains; every plucked string sends a ring of
+// glitter in its plate's colour. The drawing stays until it is wiped: three
+// fingers landing together, or shaking the phone where the browser reports
+// motion. The wind's ripples cover everything a groove has not cut through.
+//
+// The grooves live in a half-float height field that is never faded (or an
+// 8-bit one, coarser, where half floats cannot be drawn into). The glitter is
+// the trick from Journey's sand (Alan Zucconi's write-up): every grain has its
+// own tilt, and a grain flashes when that tilt mirrors the sun into the eye.
+const sandScene = (() => {
+  const group = new THREE.Group();
+  const SIZE = 36, RES = 512;
+  const RECT = new THREE.Vector3(-SIZE / 2, -SIZE / 2, SIZE);
+  const MAX_STROKE = 12;
+  const TONEMAP = "vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }";
+
+  // ---- the drawing: height of the sand where fingers have been ----
+  function fieldTarget() {
+    return new THREE.WebGLRenderTarget(RES, RES, {
+      type: floatTargets ? THREE.HalfFloatType : THREE.UnsignedByteType, format: THREE.RGBAFormat,
+      minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: false, stencilBuffer: false,
+    });
+  }
+  let fieldA = fieldTarget(), fieldB = fieldTarget();
+  // 8-bit targets store height + 0.5 scaled by 4, so grooves and heaps both fit
+  const ENC = floatTargets ? "h" : "(h * 4.0 + 0.5)";
+  const DEC = floatTargets ? "v" : "((v - 0.5) / 4.0)";
+  const strokes = Array.from({ length: MAX_STROKE }, () => new THREE.Vector4());   // from x, z, to x, z
+  const shapes = Array.from({ length: MAX_STROKE }, () => new THREE.Vector4());    // radius, depth, heap, kind (0 groove, 1 pit)
+  const drawMat = new THREE.ShaderMaterial({
+    vertexShader: PASS_VERT,
+    uniforms: {
+      uPrev: { value: null }, uInit: { value: 1 }, uErase: { value: 0 },
+      uCount: { value: 0 }, uStroke: { value: strokes }, uShape: { value: shapes }, uRect: { value: RECT },
+    },
+    fragmentShader: `
+      uniform sampler2D uPrev; uniform float uInit, uErase; uniform int uCount;
+      uniform vec4 uStroke[${MAX_STROKE}]; uniform vec4 uShape[${MAX_STROKE}]; uniform vec3 uRect;
+      varying vec2 vUv;
+      float decode(float v) { return ${DEC}; }
+      float encode(float h) { return ${ENC}; }
+      void main() {
+        float h = decode(texture2D(uPrev, vUv).r) * (1.0 - uInit);
+        h *= 1.0 - uErase;                                       // a shake smooths it all away
+        vec2 w = uRect.xy + vUv * uRect.z;
+        for (int i = 0; i < ${MAX_STROKE}; i++) {
+          if (i >= uCount) break;
+          vec2 a = uStroke[i].xy, b = uStroke[i].zw;
+          vec2 ab = b - a;
+          float t = clamp(dot(w - a, ab) / max(dot(ab, ab), 1e-8), 0.0, 1.0);
+          float d = length(w - (a + ab * t)) / uShape[i].x;       // distance from the finger's path, in radii
+          // the trough under the finger: never deeper than the finger presses
+          float trough = -uShape[i].y * max(1.0 - d * d, 0.0);
+          if (d < 1.0) h = min(h, trough);
+          // the sand it pushed aside, heaped along both edges
+          float heap = uShape[i].z * sin(3.14159 * clamp((d - 0.85) / 0.9, 0.0, 1.0));
+          // only on sand nobody has drawn in yet: a new stretch of groove must not
+          // wall off the groove it continues, or a line becomes a row of beads
+          if (d > 0.85 && d < 1.75 && h > -0.002) h = max(h, heap);
+        }
+        gl_FragColor = vec4(encode(h), 0.0, 0.0, 1.0);
+      }`,
+  });
+  const queued = [];
+  function addStroke(ax, az, bx, bz, radius, depth, heap) {
+    if (queued.length < MAX_STROKE) queued.push([ax, az, bx, bz, radius, depth, heap]);
+  }
+
+  const fieldUniforms = { uField: { value: fieldA.texture }, uFieldRect: { value: RECT } };
+  const common = Object.assign({
+    uNoise: { value: noiseTex }, uTime: { value: 0 }, uMusic: { value: new THREE.Vector3() },
+    uRipple: { value: rippleRT.texture }, uRippleRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
+  }, lightUniforms, fieldUniforms);
+
+  const FIELD_GLSL = `
+    uniform sampler2D uField; uniform vec3 uFieldRect;
+    float fieldAt(vec2 xz) {
+      vec2 uv = (xz - uFieldRect.xy) / uFieldRect.z;
+      float inside = step(0.0, uv.x) * step(uv.x, 1.0) * step(0.0, uv.y) * step(uv.y, 1.0);
+      float v = texture2D(uField, uv).r;
+      return ${DEC} * inside;
+    }
+  `;
+
+  const sandMat = new THREE.ShaderMaterial({
+    uniforms: common,
+    extensions: { derivatives: true },
+    vertexShader: `
+      varying vec3 vWorld;
+      ${FIELD_GLSL}
+      void main() {
+        vec4 w = modelMatrix * vec4(position, 1.0);
+        w.y += fieldAt(w.xz);
+        vWorld = w.xyz;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
+    fragmentShader: `
+      uniform sampler2D uNoise; uniform sampler2D uRipple; uniform vec3 uRippleRect;
+      uniform float uTime; uniform vec3 uMusic;
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
+      varying vec3 vWorld;
+      ${FIELD_GLSL}
+      ${TONEMAP}
+      float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+      vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
+      // the wind's ripples: long crests, bent by a slow noise
+      float ripples(vec2 xz) {
+        float warp = texture2D(uNoise, xz / 23.0).r * 6.0;
+        return 0.012 * sin(dot(xz, vec2(0.62, 0.78)) * 15.0 + warp * 2.2);
+      }
+      void main() {
+        vec2 xz = vWorld.xz;
+        float e = 0.05;
+        float h0 = fieldAt(xz);
+        float hx = fieldAt(xz + vec2(e, 0.0)) - fieldAt(xz - vec2(e, 0.0));
+        float hz = fieldAt(xz + vec2(0.0, e)) - fieldAt(xz - vec2(0.0, e));
+        // where a groove or a heap is, the wind's ripples are gone
+        float drawn = smoothstep(0.002, 0.012, abs(h0));
+        float r0 = ripples(xz), rx = ripples(xz + vec2(e, 0.0)) - ripples(xz - vec2(e, 0.0)), rz = ripples(xz + vec2(0.0, e)) - ripples(xz - vec2(0.0, e));
+        vec2 slope = vec2(hx, hz) / (2.0 * e) + vec2(rx, rz) / (2.0 * e) * (1.0 - drawn);
+        vec3 n = normalize(vec3(-slope.x, 1.0, -slope.y));
+        // grain-sized roughness in the normal, so the sand reads as sand
+        vec2 gr = hash22(floor(xz * 140.0)) - 0.5;
+        vec3 nGrain = normalize(n + vec3(gr.x, 0.0, gr.y) * 0.25);
+
+        float fine = texture2D(uNoise, xz / 3.0).b * 0.6 + texture2D(uNoise, xz / 0.9).b * 0.4;
+        vec3 sand = mix(vec3(0.72, 0.48, 0.24), vec3(0.88, 0.64, 0.36), fine);
+        sand = mix(sand, sand * vec3(0.92, 0.88, 0.85), texture2D(uNoise, xz / 17.0).g * 0.6);
+        float ao = clamp(1.0 + h0 * 7.0, 0.55, 1.0);              // a groove's floor sits in shadow
+
+        vec3 V = normalize(cameraPosition - vWorld);
+        float lam = max(dot(nGrain, uSunDir), 0.0);
+        vec3 lit = sand * (uAmbient * 0.6 + uSunCol * lam * 0.75) * ao;
+        // a soft sheen where the sand faces away from the sun's mirror, as Journey's
+        float sheen = pow(max(dot(reflect(-V, n), uSunDir), 0.0), 18.0);
+        lit += uSunCol * sheen * 0.08;
+
+        // glitter: each grain cell has its own facet; it flashes when the facet
+        // mirrors the sun into the eye. More grains wake with the high notes,
+        // and the plucked strings' rings make their colour glitter
+        vec2 cell = floor(xz * 17.0);
+        vec2 hr = hash22(cell + 7.0);
+        float t = uTime * 0.25 + hash12(cell) * 6.2831;
+        vec3 facet = normalize(vec3((hr.x - 0.5) * 1.6 + 0.15 * sin(t), 0.8, (hr.y - 0.5) * 1.6 + 0.15 * cos(t)));
+        float flash = pow(max(dot(reflect(-V, facet), uSunDir), 0.0), 60.0);
+        vec2 ruv = (xz - uRippleRect.xy) / uRippleRect.z;
+        vec3 ring = texture2D(uRipple, ruv).rgb;
+        float wake = step(0.70 - uMusic.z * 0.12 - length(ring) * 0.3, hash12(cell + 3.1));
+        vec2 inCell = fract(xz * 17.0) - 0.5;
+        float dotShape = smoothstep(0.42, 0.05, length(inCell + (hr - 0.5) * 0.25));
+        float px = fwidth(xz.x * 17.0);
+        float sharp = 1.0 - smoothstep(0.6, 1.4, px);             // fade glints too small to draw
+        vec3 glint = mix(uSunCol, ring * 3.0 + uSunCol * 0.3, clamp(length(ring) * 2.0, 0.0, 1.0));
+        lit += glint * flash * wake * dotShape * sharp * 6.0;
+        lit += ring * 0.25 * (0.5 + 0.5 * dotShape);               // and a faint tint where a ring passes
+
+        float fog = 1.0 - exp(-uFogDensity * 0.6 * length(vWorld - cameraPosition));
+        gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+  const sand = new THREE.Mesh(new THREE.PlaneGeometry(SIZE, SIZE, 320, 320), sandMat);
+  sand.rotation.x = -Math.PI / 2;
+  group.add(sand);
+  const far = new THREE.Mesh(new THREE.RingGeometry(SIZE * 0.5 * Math.SQRT2, 160, 4, 1, Math.PI / 4), sandMat);
+  far.rotation.x = -Math.PI / 2;
+  far.position.y = -0.003;
+  group.add(far);
+
+  // ---- the frame ----------------------------------------------------------------
+  let erasing = 0, grainTime = 0;
+  const SAND = [0.72, 0.58, 0.40];
+  function update(dt, touches, time) {
+    common.uTime.value = time;
+    common.uMusic.value.copy(music);
+    const viewScale = clamp(camera.position.y / 11, 0.6, 1.6);
+    // each finger draws from where it was to where it is
+    grainTime += dt;
+    for (const t of touches) {
+      const radius = 0.12 * viewScale * (1 + 0.6 * t.depth);
+      const depth = 0.035 + 0.045 * t.depth;
+      addStroke(t.px, t.pz, t.x, t.z, radius, depth, depth * 0.45);
+      if (t.speed > 0.6 && grainTime > 0.05) burst({ x: t.x, y: 0, z: t.z }, SAND, 0.15, "sand", 3);
+    }
+    if (grainTime > 0.05) grainTime = 0;
+
+    let eraseNow = 0;
+    if (erasing > 0) { eraseNow = 1 - Math.exp(-dt / 0.22); erasing -= dt; }
+    let n = 0;
+    for (const q of queued) {
+      strokes[n].set(q[0], q[1], q[2], q[3]);
+      shapes[n].set(q[4], q[5], q[6], 0);
+      n++;
+    }
+    queued.length = 0;
+    if (n > 0 || eraseNow > 0 || drawMat.uniforms.uInit.value > 0) {
+      drawMat.uniforms.uCount.value = n;
+      drawMat.uniforms.uErase.value = eraseNow;
+      drawMat.uniforms.uPrev.value = fieldA.texture;
+      passQuad.material = drawMat;
+      renderer.setRenderTarget(fieldB);
+      renderer.render(passScene, passCam);
+      renderer.setRenderTarget(null);
+      drawMat.uniforms.uInit.value = 0;
+      [fieldA, fieldB] = [fieldB, fieldA];
+      fieldUniforms.uField.value = fieldA.texture;
+    }
+  }
+
+  return {
+    id: "sand", name: "Sand", group,
+    sound: { voice: 4, ring: 4.5, wet: 0.40 },
+    touchHeight: 0.0, glowHeight: 0.04,
+    resize() {},
+    update,
+    tune() {},
+    enter() {},
+    exit() {},
+    tap(f) {
+      addStroke(f.world.x, f.world.z, f.world.x, f.world.z, 0.2, 0.06, 0.03);
+      burst(f.world, SAND, 0.5, "sand", 18);
+    },
+    pluck() {},
+    // wiped like an Etch A Sketch: the sand settles flat over about a second,
+    // grains spraying up across the view
+    erase() {
+      erasing = 1.1;
+      for (let k = 0; k < 10; k++) {
+        const p = { x: camera.position.x + (Math.random() - 0.5) * 8, y: 0, z: camera.position.z - 2 + (Math.random() - 0.5) * 8 };
+        burst(p, SAND, 0.8, "sand", 10);
+      }
+    },
+    stats() { return { drawing: floatTargets ? "half" : "8-bit" }; },
+  };
+})();
+
+
+const SCENES = [meadowScene, waterScene, sandScene];
 let activeScene = meadowScene;
 
 // Switch scene: its surface replaces the last one, fingers meet it at its
@@ -2212,8 +2638,30 @@ function depthFor(f) { return f.depth; }
 const canvas = renderer.domElement;
 function pointerXY(e) { return [e.clientX / window.innerWidth, e.clientY / window.innerHeight]; }
 
+// Etch A Sketch: a scene that keeps what is drawn (the sand) is wiped by
+// shaking the phone where the browser reports motion (not inside claude.ai,
+// which gives pages no motion sensors), or by three fingers landing together.
+const landings = [];
+function maybeErase() {
+  if (activeScene.erase) activeScene.erase();
+}
+let shakeHits = [];
+function onMotion(e) {
+  const a = e.acceleration && e.acceleration.x != null ? e.acceleration : null;
+  const g = e.accelerationIncludingGravity;
+  const mag = a ? Math.hypot(a.x, a.y, a.z) : (g ? Math.abs(Math.hypot(g.x, g.y, g.z) - 9.81) : 0);
+  const now = performance.now();
+  if (mag > 14) shakeHits.push(now);
+  shakeHits = shakeHits.filter((t) => now - t < 900);
+  if (shakeHits.length >= 4) { shakeHits = []; maybeErase(); }
+}
+
 canvas.addEventListener("pointerdown", (e) => {
   if (!started) return;
+  const now = performance.now();
+  landings.push(now);
+  while (landings.length && now - landings[0] > 220) landings.shift();
+  if (landings.length >= 3 && fingers.size >= 2) { landings.length = 0; maybeErase(); }
   try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* capture is a nicety */ }
   const f = newFinger(e.pointerId);
   f.downAt = performance.now();
@@ -2388,9 +2836,11 @@ function frame(now) {
   for (const f of fingers.values()) {
     const sp = f.vel.length();
     const k = sp > 1e-3 ? clamp(sp / 3, 0, 1) / sp : 0;
-    touches.push({ x: f.world.x, z: f.world.z, radius: (0.5 + 0.35 * depthFor(f)) * viewScale,
+    if (!f.lastWorld) f.lastWorld = f.world.clone();
+    touches.push({ x: f.world.x, z: f.world.z, px: f.lastWorld.x, pz: f.lastWorld.z, radius: (0.5 + 0.35 * depthFor(f)) * viewScale,
                    press: 0.15 + 0.85 * depthFor(f), dx: f.vel.x * k, dz: f.vel.y * k, strength: 0.45,
                    speed: sp, depth: depthFor(f), finger: f });
+    f.lastWorld.copy(f.world);
     f.vel.multiplyScalar(Math.exp(-dt / 0.15));
     f.sprite.position.set(f.world.x, activeScene.glowHeight, f.world.z);
     f.sprite.material.opacity = lerp(f.sprite.material.opacity, 0.25 + 0.6 * depthFor(f), 0.2);
@@ -2450,6 +2900,11 @@ $("begin").addEventListener("click", async () => {
   $("start").classList.add("gone");
   $("controls").hidden = false;
   started = true;
+  try {
+    if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) {
+      if (await DeviceMotionEvent.requestPermission() === "granted") window.addEventListener("devicemotion", onMotion);
+    } else window.addEventListener("devicemotion", onMotion);
+  } catch (e) { /* no motion here: three fingers still wipe the sand */ }
   try { await startAudio(); } catch (e) { showError("Ljudet kunde inte starta: " + e.message); }
   try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (e) {}
   const hint = $("hint");
@@ -2531,7 +2986,7 @@ $("chord-reset").addEventListener("click", () => {
   settings.chords = DEFAULT_CHORDS.map((c) => c.slice());
   saveSettings(); applyChords(); renderChordList();
 });
-const VOICE_NAMES = ["Omni (OM-84)", "Harpa", "Vibrafon", "Gitarr"];
+const VOICE_NAMES = ["Omni (OM-84)", "Harpa", "Vibrafon", "Gitarr", "Cello"];
 VOICE_NAMES.forEach((name, i) => $("voice").add(new Option(name, i, false, i === settings.voice)));
 $("ring").value = settings.ring;
 $("voice").addEventListener("change", (e) => {

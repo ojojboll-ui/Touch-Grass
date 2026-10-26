@@ -20,6 +20,8 @@ function TouchGrassEngine() {
     { name: "HARPA",    wave: SAW,   pw: 0.0,  filterMultiple: 5.0,  decayScale: 1.15, attack: 0.0030, detune: 2.0 },
     { name: "VIBRAFON", wave: SINE,  pw: 0.0,  filterMultiple: 12.0, decayScale: 1.60, attack: 0.0040, detune: 1.5 },
     { name: "GITARR",   wave: PULSE, pw: 0.20, filterMultiple: 9.0,  decayScale: 0.70, attack: 0.0015, detune: 4.0 },
+    // not a pluck: each string is a short bow stroke on Chordtroller's bowed string
+    { name: "CELLO", bowed: true, decayScale: 1.0 },
   ];
 
   const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -253,12 +255,186 @@ function TouchGrassEngine() {
     }
   }
 
+  // ---- the cello: Chordtroller's bowed string (dsp/BowedString.h, StringEngine.h) ----
+  // A digital waveguide with the bow as a friction junction (Smith and Woodhouse's
+  // hyperbolic friction, solved exactly as a quadratic, hysteresis kept). Ported
+  // line by line; what differs is only the playing: here every plucked string is
+  // a short stroke, the bow set down, drawn for a while, lifted, and the string
+  // left to ring. The lessons that made it play clean carry over: loss as a fixed
+  // share per period, the loop's lowpass at a multiple of the pitch, force from
+  // the speed the bow is asked for, every stroke leaning in from a third of the
+  // limit, and the string run at twice the sample rate.
+
+  class FractionalDelay {
+    constructor(maxDelay) {
+      let size = 16;
+      while (size < maxDelay + 8) size <<= 1;
+      this.buf = new Float32Array(size); this.mask = size - 1; this.w = 0;
+    }
+    clear() { this.buf.fill(0); }
+    push(x) { this.buf[this.w] = x; this.w = (this.w + 1) & this.mask; }
+    // four-point Lagrange, so a moving read point does not wobble the partials
+    read(delay) {
+      delay = clamp(delay, 2, this.mask - 4);
+      const whole = delay | 0, f = delay - whole, b = this.buf, m = this.mask, w = this.w;
+      const ym1 = b[(w - (whole - 1)) & m], y0 = b[(w - whole) & m], y1 = b[(w - whole - 1) & m], y2 = b[(w - whole - 2) & m];
+      const fm1 = f + 1, f1 = f - 1, f2 = f - 2;
+      return ym1 * (-f * f1 * f2 / 6) + y0 * (fm1 * f1 * f2 * 0.5) + y1 * (-fm1 * f * f2 * 0.5) + y2 * (fm1 * f * f1 / 6);
+    }
+  }
+
+  const MU_S = 0.8, MU_D = 0.3, MU_SPAN = 0.5, SLIP_KNEE = 0.08;
+  class BowedString {
+    constructor(sr) {
+      this.sr = sr;
+      const longest = ((sr / 20) | 0) + 8;
+      this.toFinger = new FractionalDelay(longest);
+      this.toBridge = new FractionalDelay(longest);
+      this.fingerLength = 100; this.bridgeLength = 10; this.betaNow = 0.1;
+      this.loopGain = 0.99; this.pole = 0.2; this.lowpassDelay = 0;
+      this.reset();
+    }
+    reset() { this.toFinger.clear(); this.toBridge.clear(); this.lp = 0; this.sticking = false; }
+    // loss as log10 of the gain per round trip; the loop lowpass's delay is taken
+    // off the finger side so the string is not flat
+    setLosses(hz, logLoss, lowpassHz) {
+      hz = Math.max(hz, 20);
+      this.loopGain = Math.pow(10, -logLoss);
+      this.pole = Math.exp(-2 * PI * Math.min(lowpassHz, 0.45 * this.sr) / this.sr);
+      const w = 2 * PI * hz / this.sr;
+      this.lowpassDelay = Math.atan2(this.pole * Math.sin(w), 1 - this.pole * Math.cos(w)) / w;
+    }
+    setTuning(hz, bowPosition) {
+      const period = this.sr / clamp(hz, 20, this.sr / 12);
+      this.bridgeLength = clamp(bowPosition * period, 2.5, period * 0.4);
+      this.fingerLength = Math.max(2.5, period - this.bridgeLength - this.lowpassDelay);
+      this.betaNow = this.bridgeLength / period;
+    }
+    process(bowVelocity, bowForce, restDamping) {
+      const atBridge = this.toBridge.read(this.bridgeLength);
+      const fromFinger = -this.toFinger.read(this.fingerLength);
+      this.lp = (1 - this.pole) * atBridge + this.pole * this.lp;
+      const fromBridge = -this.loopGain * this.lp;
+      const incoming = fromFinger + fromBridge;
+      const added = this.friction(bowVelocity, bowForce, incoming) - restDamping * incoming;
+      this.toFinger.push(fromBridge + added);
+      this.toBridge.push(fromFinger + added);
+      return atBridge;
+    }
+    friction(vb, k, vh) {
+      if (k <= 0) { this.sticking = false; return 0; }
+      const want = vb - vh, a = Math.abs(want), sgn = want >= 0 ? 1 : -1;
+      const canStick = a <= k * MU_S;
+      if (this.sticking && canStick) return want;
+      const b = SLIP_KNEE - a + k * MU_D, c = SLIP_KNEE * (k * MU_S - a), disc = b * b - 4 * c;
+      if (disc >= 0) {
+        const x = 0.5 * (-b + Math.sqrt(disc));
+        if (x > 0) { this.sticking = false; return sgn * (a - x); }
+      }
+      this.sticking = true;          // no slipping solution left: the hair has caught the string
+      return want;
+    }
+  }
+
+  // The cello's body: Chordtroller's violin plate modes scaled to a cello.
+  class StringBody {
+    constructor(sr) {
+      this.sr = sr;
+      const MODES = [[275, 14, 0.90, 0], [405, 18, 0.30, 0], [460, 22, 1.10, 0], [540, 22, 1.00, 0], [700, 16, 0.45, 0],
+                     [860, 16, 0.40, 0], [1050, 14, 0.45, 0], [1320, 12, 0.40, 0], [1650, 10, 0.40, 1], [2100, 6, 0.60, 1],
+                     [2650, 6, 0.70, 1], [3300, 6, 0.45, 1], [4600, 4, 0.22, 1]];
+      const low = 0.42, high = 0.62;                 // CELLO: plate modes and the bridge hill
+      this.modes = MODES.map(([hz, q, gain, hill]) => {
+        hz = Math.min(hz * (hill ? high : low), 0.45 * sr);
+        const w = 2 * PI * hz / sr, alpha = Math.sin(w) / (2 * q), a0 = 1 + alpha;
+        return { b0: alpha / a0, b2: -alpha / a0, a1: -2 * Math.cos(w) / a0, a2: (1 - alpha) / a0, gain, z1: 0, z2: 0 };
+      });
+      const w = 2 * PI * (190 * low) / sr, alpha = Math.sin(w) / (2 * 0.7071), cw = Math.cos(w), a0 = 1 + alpha;
+      this.hp = { b0: (1 + cw) * 0.5 / a0, b1: -(1 + cw) / a0, b2: (1 + cw) * 0.5 / a0, a1: -2 * cw / a0, a2: (1 - alpha) / a0, x1: 0, x2: 0, y1: 0, y2: 0 };
+      this.lp = 0;
+      this.lpc = 1 - Math.exp(-2 * PI * Math.min(7500 * high, 0.45 * sr) / sr);
+    }
+    process(x) {
+      const h = this.hp;
+      const direct = h.b0 * x + h.b1 * h.x1 + h.b2 * h.x2 - h.a1 * h.y1 - h.a2 * h.y2;
+      h.x2 = h.x1; h.x1 = x; h.y2 = h.y1; h.y1 = direct;
+      let sum = direct * 0.35;
+      for (const m of this.modes) {
+        const y = m.b0 * x + m.z1;
+        m.z1 = -m.a1 * y + m.z2;
+        m.z2 = m.b2 * x - m.a2 * y;
+        sum += y * m.gain;
+      }
+      this.lp += (sum - this.lp) * this.lpc;
+      return this.lp;
+    }
+  }
+
+  const OVERSAMPLE = 2;
+  class CelloVoice {
+    constructor(sr) { this.sr = sr; this.string = new BowedString(sr * OVERSAMPLE); this.active = false; this.note = -1; this.stamp = 0; }
+    start(note, velocity, bright, holdSeconds, stamp) {
+      while (note > 79) note -= 12;              // above the cello's reach: an octave down
+      const hz = 440 * Math.pow(2, (note - 69) / 12);
+      if (!this.active || this.note !== note) this.string.reset();
+      this.note = note; this.stamp = stamp; this.active = true;
+      const loss = 0.003 * Math.max(1, 200 / hz);              // below 200 Hz the loss per period grows
+      this.string.setLosses(hz, loss, Math.min(hz * (8 + 6 * clamp(bright, 0, 1)), 5000));
+      this.string.setTuning(hz, 0.1);
+      this.vbTarget = 0.07 + 0.15 * clamp(velocity, 0, 1);      // metres a second
+      this.vb = this.vb || 0;
+      this.bowCoef = 1 - Math.exp(-hz / (6 * this.sr));         // up to speed over about six periods
+      this.settle = 0;
+      this.settleCoef = 1 - Math.exp(-hz / (30 * this.sr));     // leans in over thirty periods
+      this.holdLeft = Math.round(holdSeconds * this.sr);
+      this.bowing = true;
+      this.level = 0.02;
+    }
+    process() {
+      if (this.bowing && --this.holdLeft <= 0) this.bowing = false;
+      this.vb += ((this.bowing ? this.vbTarget : 0) - this.vb) * this.bowCoef;
+      this.settle += (1 - this.settle) * this.settleCoef;
+      // force from the speed asked for, not the speed reached; from 0.35 to 0.55 of Schelleng's limit
+      const k = this.bowing ? (0.35 + 0.2 * this.settle) * this.vbTarget / (this.string.betaNow * MU_SPAN) : 0;
+      let out = 0;
+      for (let i = 0; i < OVERSAMPLE; i++) out += this.string.process(this.vb, k, 0);
+      out *= 1 / OVERSAMPLE;
+      this.level = Math.max(Math.abs(out), this.level * 0.9997);
+      if (!this.bowing && this.level < 2e-4) this.active = false;
+      return out;
+    }
+  }
+
+  class CelloSection {
+    constructor(sr, voices) {
+      this.voices = Array.from({ length: voices }, () => new CelloVoice(sr));
+      this.body = new StringBody(sr);
+      this.dcIn = 0; this.dcOut = 0; this.dcCoef = 1 - 2 * PI * 12 / sr;
+    }
+    start(note, velocity, bright, hold, stamp) {
+      let v = this.voices.find((x) => x.active && x.note === note) || this.voices.find((x) => !x.active);
+      if (!v) { v = this.voices[0]; for (const x of this.voices) if (x.stamp < v.stamp) v = x; }
+      v.start(note, velocity, bright, hold, stamp);
+    }
+    allOff() { for (const v of this.voices) { v.bowing = false; v.active = false; v.string.reset(); } }
+    process() {
+      let sum = 0, any = false;
+      for (const v of this.voices) if (v.active) { sum += v.process(); any = true; }
+      const y = this.body.process(sum);
+      // the loop carries a little DC after a stroke
+      this.dcOut = y - this.dcIn + this.dcCoef * this.dcOut; this.dcIn = y;
+      return any || Math.abs(this.dcOut) > 1e-6 ? this.dcOut : 0;
+    }
+  }
+
   // ---- GrassEngine --------------------------------------------------------------
   const STRING_GAIN = 0.38, DRONE_GAIN = 1.1;
 
   class GrassEngine {
     constructor(sr, pluckVoices = 48) {
       this.sr = sr;
+      this.cello = new CelloSection(sr, pluckVoices >= 48 ? 8 : 6);
+      this.celloGain = 0.46;
       this.plucks = Array.from({ length: pluckVoices }, () => new PluckVoice(sr));
       this.drone = Array.from({ length: 8 }, () => new JunoVoice(sr));
       this.ensemble = new Ensemble(sr);
@@ -291,7 +467,7 @@ function TouchGrassEngine() {
       if (this.pending.length >= 128) return;
       this.pending.push({ note, vel: clamp(velocity, 0, 1), left: Math.max(0, delaySamples | 0), bright });
     }
-    setVoice(i) { this.voiceIndex = ((i % 4) + 4) % 4; this.updateDecay(); }
+    setVoice(i) { const n = VOICES.length; this.voiceIndex = ((i % n) + n) % n; this.updateDecay(); }
     setRing(s) { this.ringSeconds = clamp(s, 0.2, 30); this.updateDecay(); }
     setDroneLevel(v) { this.droneTarget = clamp(v, 0, 1); }
     setDroneBrightness(v) { this.droneCutoff = clamp(v, 0, 1); }
@@ -299,7 +475,7 @@ function TouchGrassEngine() {
     setEnsembleMix(m) { this.ensemble.mix = clamp(m, 0, 1); }
     setMaster(g) { this.masterTarget = clamp(g, 0, 2); }
     setTone(t) { this.toneTarget = clamp(t, 0, 1); }
-    allOff() { this.pending.length = 0; for (const v of this.plucks) v.stopQuickly(); for (const v of this.drone) v.noteOff(); this.chord = null; }
+    allOff() { this.pending.length = 0; this.cello.allOff(); for (const v of this.plucks) v.stopQuickly(); for (const v of this.drone) v.noteOff(); this.chord = null; }
     activePlucks() { let n = 0; for (const v of this.plucks) if (v.active) n++; return n; }
 
     updateDecay() {
@@ -309,6 +485,11 @@ function TouchGrassEngine() {
     }
     startNote(note, vel, bright = 1) {
       if (note < 0 || note > 127) return;
+      if (VOICES[this.voiceIndex].bowed) {
+        // a bow stroke as long as a third of the ring time asks, then the string rings
+        this.cello.start(note, vel, bright, clamp(this.ringSeconds * 0.3, 0.25, 3), ++this.stamp);
+        return;
+      }
       const freq = 440 * Math.pow(2, (note - 69) / 12);
       this.allocate(note).start(freq, vel, this.decayCoef, VOICES[this.voiceIndex], note, ++this.stamp, bright);
     }
@@ -352,6 +533,7 @@ function TouchGrassEngine() {
         if (this.pending.length) this.firePending();
         let strings = 0;
         for (const v of this.plucks) if (v.active) strings += v.process();
+        strings += this.cello.process() * this.celloGain;
 
         this.tone += (this.toneTarget - this.tone) * 0.002;
         if ((this.toneTick++ & 15) === 0) {
@@ -401,7 +583,7 @@ function TouchGrassEngine() {
     }
   }
 
-  return { GrassEngine, plate, VOICES };
+  return { GrassEngine, plate, VOICES, CelloVoice };
 }
 
 // The AudioWorklet side: a processor that owns one engine and takes commands

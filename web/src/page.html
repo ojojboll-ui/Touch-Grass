@@ -229,10 +229,10 @@ const settings = (() => {
     if (saved && saved.sound && typeof saved.sound === "object") {
       for (const id in saved.sound) {
         const v = saved.sound[id];
-        if (v && Number.isInteger(v.voice) && Number.isFinite(v.ring)) s.sound[id] = { voice: clamp(v.voice, 0, 3), ring: clamp(v.ring, 0.8, 10) };
+        if (v && Number.isInteger(v.voice) && Number.isFinite(v.ring)) s.sound[id] = { voice: clamp(v.voice, 0, 4), ring: clamp(v.ring, 0.8, 10) };
       }
     }
-    if (saved && Number.isInteger(saved.voice)) s.voice = clamp(saved.voice, 0, 3);
+    if (saved && Number.isInteger(saved.voice)) s.voice = clamp(saved.voice, 0, 4);
     if (saved && Number.isFinite(saved.ring)) s.ring = clamp(saved.ring, 0.8, 10);
     if (saved && typeof saved.drone === "boolean") s.drone = saved.drone;
     if (saved && Number.isFinite(saved.droneLevel)) s.droneLevel = clamp(saved.droneLevel, 0, 1);
@@ -409,9 +409,11 @@ let pollenNext = 0;
 
 // kind "pollen": light motes that drift up and away on the breeze.
 // kind "splash": droplets thrown up from water that fall back and vanish into it.
-function burst(at, rgb, strength, kind = "pollen") {
-  const splash = kind === "splash";
-  const count = splash ? 22 : 14;
+// kind "sand": grains kicked up that fall back onto the sand.
+function burst(at, rgb, strength, kind = "pollen", count) {
+  const splash = kind === "splash" || kind === "sand";
+  const grains = kind === "sand";
+  count = count || (splash ? 22 : 14);
   for (let k = 0; k < count; k++) {
     const i = pollenNext; pollenNext = (pollenNext + 1) % POLLEN;
     const a = Math.random() * Math.PI * 2, r = Math.random() * (splash ? 0.12 : 0.25);
@@ -419,10 +421,13 @@ function burst(at, rgb, strength, kind = "pollen") {
     if (splash) {
       const out = (0.3 + 0.9 * Math.random()) * (0.5 + strength);
       pPos[i * 3 + 1] = at.y + 0.02;
-      pVel[i * 3] = Math.cos(a) * out; pVel[i * 3 + 1] = 1.2 + 1.8 * Math.random() * (0.4 + strength); pVel[i * 3 + 2] = Math.sin(a) * out;
+      const up = grains ? 0.5 + 1.2 * Math.random() * (0.4 + strength) : 1.2 + 1.8 * Math.random() * (0.4 + strength);
+      const side = grains ? out * 0.5 : out;
+      pVel[i * 3] = Math.cos(a) * side; pVel[i * 3 + 1] = up; pVel[i * 3 + 2] = Math.sin(a) * side;
       pLife[i] = 0.9 + Math.random() * 0.6; pGrav[i] = -7.5; pDrag[i] = 0.15;
       const m = 0.8 + 0.2 * Math.random();
-      pCol[i * 3] = lerp(rgb[0], 1, 0.75) * m; pCol[i * 3 + 1] = lerp(rgb[1], 1, 0.75) * m; pCol[i * 3 + 2] = lerp(rgb[2], 1, 0.8) * m;
+      const toward = grains ? 0.15 : 0.75;
+      pCol[i * 3] = lerp(rgb[0], 1, toward) * m; pCol[i * 3 + 1] = lerp(rgb[1], 1, toward) * m; pCol[i * 3 + 2] = lerp(rgb[2], 1, toward + 0.05) * m;
     } else {
       pPos[i * 3 + 1] = at.y + 0.1 + Math.random() * 0.2;
       pVel[i * 3] = Math.cos(a) * 0.3 * Math.random(); pVel[i * 3 + 1] = 0.25 + 0.5 * Math.random() * strength; pVel[i * 3 + 2] = Math.sin(a) * 0.3 * Math.random();
@@ -457,7 +462,7 @@ const glowMat = new THREE.SpriteMaterial({ map: dotTex, color: 0xfff1cf, transpa
 // ---- the scenes ------------------------------------------------------------------
 /*SCENES*/
 
-const SCENES = [meadowScene, waterScene];
+const SCENES = [meadowScene, waterScene, sandScene];
 let activeScene = meadowScene;
 
 // Switch scene: its surface replaces the last one, fingers meet it at its
@@ -681,8 +686,30 @@ function depthFor(f) { return f.depth; }
 const canvas = renderer.domElement;
 function pointerXY(e) { return [e.clientX / window.innerWidth, e.clientY / window.innerHeight]; }
 
+// Etch A Sketch: a scene that keeps what is drawn (the sand) is wiped by
+// shaking the phone where the browser reports motion (not inside claude.ai,
+// which gives pages no motion sensors), or by three fingers landing together.
+const landings = [];
+function maybeErase() {
+  if (activeScene.erase) activeScene.erase();
+}
+let shakeHits = [];
+function onMotion(e) {
+  const a = e.acceleration && e.acceleration.x != null ? e.acceleration : null;
+  const g = e.accelerationIncludingGravity;
+  const mag = a ? Math.hypot(a.x, a.y, a.z) : (g ? Math.abs(Math.hypot(g.x, g.y, g.z) - 9.81) : 0);
+  const now = performance.now();
+  if (mag > 14) shakeHits.push(now);
+  shakeHits = shakeHits.filter((t) => now - t < 900);
+  if (shakeHits.length >= 4) { shakeHits = []; maybeErase(); }
+}
+
 canvas.addEventListener("pointerdown", (e) => {
   if (!started) return;
+  const now = performance.now();
+  landings.push(now);
+  while (landings.length && now - landings[0] > 220) landings.shift();
+  if (landings.length >= 3 && fingers.size >= 2) { landings.length = 0; maybeErase(); }
   try { canvas.setPointerCapture(e.pointerId); } catch (err) { /* capture is a nicety */ }
   const f = newFinger(e.pointerId);
   f.downAt = performance.now();
@@ -857,9 +884,11 @@ function frame(now) {
   for (const f of fingers.values()) {
     const sp = f.vel.length();
     const k = sp > 1e-3 ? clamp(sp / 3, 0, 1) / sp : 0;
-    touches.push({ x: f.world.x, z: f.world.z, radius: (0.5 + 0.35 * depthFor(f)) * viewScale,
+    if (!f.lastWorld) f.lastWorld = f.world.clone();
+    touches.push({ x: f.world.x, z: f.world.z, px: f.lastWorld.x, pz: f.lastWorld.z, radius: (0.5 + 0.35 * depthFor(f)) * viewScale,
                    press: 0.15 + 0.85 * depthFor(f), dx: f.vel.x * k, dz: f.vel.y * k, strength: 0.45,
                    speed: sp, depth: depthFor(f), finger: f });
+    f.lastWorld.copy(f.world);
     f.vel.multiplyScalar(Math.exp(-dt / 0.15));
     f.sprite.position.set(f.world.x, activeScene.glowHeight, f.world.z);
     f.sprite.material.opacity = lerp(f.sprite.material.opacity, 0.25 + 0.6 * depthFor(f), 0.2);
@@ -919,6 +948,11 @@ $("begin").addEventListener("click", async () => {
   $("start").classList.add("gone");
   $("controls").hidden = false;
   started = true;
+  try {
+    if (typeof DeviceMotionEvent !== "undefined" && DeviceMotionEvent.requestPermission) {
+      if (await DeviceMotionEvent.requestPermission() === "granted") window.addEventListener("devicemotion", onMotion);
+    } else window.addEventListener("devicemotion", onMotion);
+  } catch (e) { /* no motion here: three fingers still wipe the sand */ }
   try { await startAudio(); } catch (e) { showError("Ljudet kunde inte starta: " + e.message); }
   try { if (navigator.wakeLock) await navigator.wakeLock.request("screen"); } catch (e) {}
   const hint = $("hint");
@@ -1000,7 +1034,7 @@ $("chord-reset").addEventListener("click", () => {
   settings.chords = DEFAULT_CHORDS.map((c) => c.slice());
   saveSettings(); applyChords(); renderChordList();
 });
-const VOICE_NAMES = ["Omni (OM-84)", "Harpa", "Vibrafon", "Gitarr"];
+const VOICE_NAMES = ["Omni (OM-84)", "Harpa", "Vibrafon", "Gitarr", "Cello"];
 VOICE_NAMES.forEach((name, i) => $("voice").add(new Option(name, i, false, i === settings.voice)));
 $("ring").value = settings.ring;
 $("voice").addEventListener("change", (e) => {
