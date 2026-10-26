@@ -22,6 +22,8 @@ function TouchGrassEngine() {
     { name: "GITARR",   wave: PULSE, pw: 0.20, filterMultiple: 9.0,  decayScale: 0.70, attack: 0.0015, detune: 4.0 },
     // not a pluck: each string is a short bow stroke on Chordtroller's bowed string
     { name: "CELLO", bowed: true, decayScale: 1.0 },
+    // not a pluck either: each string is a breath into a reed flute
+    { name: "NEY", blown: true, decayScale: 1.0 },
   ];
 
   const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
@@ -427,6 +429,80 @@ function TouchGrassEngine() {
     }
   }
 
+  // ---- the ney: a blown reed flute ------------------------------------------------
+  // No free ney recordings exist with more than a note or two, so it is made:
+  // a soft fundamental with a few weak overtones, breath noise tuned to the same
+  // pitch by two resonant bandpasses, and a wide airy hiss over it all, which is
+  // most of what makes a ney a ney. Each note is a breath: it swells in over a
+  // tenth of a second while the pitch rises into tune from a little below, a
+  // vibrato grows once the note has settled, and it fades when the breath ends.
+  class Bandpass {
+    set(sr, hz, q) {
+      const w = 2 * PI * Math.min(hz, 0.45 * sr) / sr, alpha = Math.sin(w) / (2 * q), a0 = 1 + alpha;
+      this.b0 = alpha / a0; this.b2 = -alpha / a0; this.a1 = -2 * Math.cos(w) / a0; this.a2 = (1 - alpha) / a0;
+      this.z1 = this.z1 || 0; this.z2 = this.z2 || 0;
+    }
+    process(x) { const y = this.b0 * x + this.z1; this.z1 = -this.a1 * y + this.z2; this.z2 = this.b2 * x - this.a2 * y; return y; }
+  }
+
+  class NeyVoice {
+    constructor(sr) {
+      this.sr = sr; this.active = false; this.note = -1; this.stamp = 0;
+      this.bp1 = new Bandpass(); this.bp2 = new Bandpass(); this.hissLp = 0; this.hissHp = 0;
+      this.rng = 0x1234567 + Math.floor(Math.random() * 1e6);
+      this.phase = 0;
+    }
+    noise() { this.rng ^= this.rng << 13; this.rng ^= this.rng >>> 17; this.rng ^= this.rng << 5; return ((this.rng >>> 0) / 4294967296) * 2 - 1; }
+    start(note, velocity, bright, holdSeconds, stamp) {
+      while (note < 55) note += 12;                // a ney's reach: from about G3
+      while (note > 88) note -= 12;
+      this.note = note; this.stamp = stamp; this.active = true;
+      this.hz = 440 * Math.pow(2, (note - 69) / 12);
+      this.bp1.set(this.sr, this.hz, 9);
+      this.bp2.set(this.sr, this.hz * 2, 7);
+      this.amp = 0.5 + 0.5 * clamp(velocity, 0, 1);
+      this.breathy = 0.55 + 0.35 * (1 - clamp(bright, 0, 1));     // a soft touch is mostly breath
+      this.t = 0; this.hold = holdSeconds; this.env = this.env || 0;
+      this.attack = 1 - Math.exp(-1 / (0.09 * this.sr));
+      this.release = 1 - Math.exp(-1 / (0.32 * this.sr));
+      this.vibPhase = Math.random();
+    }
+    process() {
+      const t = (this.t += 1 / this.sr);
+      const blowing = t < this.hold;
+      this.env += ((blowing ? 1 : 0) - this.env) * (blowing ? this.attack : this.release);
+      if (!blowing && this.env < 1e-4) { this.active = false; this.env = 0; return 0; }
+      // into tune from a third of a semitone below, and a vibrato that grows after half a second
+      const scoop = -0.35 * Math.exp(-t / 0.08);
+      this.vibPhase += 5.1 / this.sr;
+      const vib = 0.12 * clamp((t - 0.45) / 0.6, 0, 1) * Math.sin(2 * PI * this.vibPhase);
+      const hz = this.hz * Math.pow(2, (scoop + vib) / 12);
+      this.phase += hz / this.sr; if (this.phase >= 1) this.phase -= 1;
+      const a = 2 * PI * this.phase;
+      const tone = Math.sin(a) + 0.22 * Math.sin(2 * a) + 0.08 * Math.sin(3 * a);
+      const n = this.noise();
+      const pitched = this.bp1.process(n) * 1.6 + this.bp2.process(n) * 0.7;
+      // the airy hiss: noise band-limited to roughly 1.5 to 7 kHz
+      this.hissLp += 0.45 * (n - this.hissLp);
+      this.hissHp += 0.12 * (this.hissLp - this.hissHp);
+      const hiss = this.hissLp - this.hissHp;
+      const flutter = 1 + 0.06 * Math.sin(2 * PI * this.vibPhase * 0.7 + 1.3);   // the breath is never quite steady
+      const breath = (pitched * 0.55 + hiss * 0.35) * this.breathy;
+      return (tone * (1 - this.breathy * 0.6) * 0.5 + breath) * this.env * this.amp * flutter;
+    }
+  }
+
+  class NeySection {
+    constructor(sr, voices) { this.voices = Array.from({ length: voices }, () => new NeyVoice(sr)); }
+    start(note, velocity, bright, hold, stamp) {
+      let v = this.voices.find((x) => x.active && x.note === note) || this.voices.find((x) => !x.active);
+      if (!v) { v = this.voices[0]; for (const x of this.voices) if (x.stamp < v.stamp) v = x; }
+      v.start(note, velocity, bright, hold, stamp);
+    }
+    allOff() { for (const v of this.voices) { v.active = false; v.env = 0; } }
+    process() { let s = 0; for (const v of this.voices) if (v.active) s += v.process(); return s; }
+  }
+
   // ---- GrassEngine --------------------------------------------------------------
   const STRING_GAIN = 0.38, DRONE_GAIN = 1.1;
 
@@ -435,6 +511,8 @@ function TouchGrassEngine() {
       this.sr = sr;
       this.cello = new CelloSection(sr, pluckVoices >= 48 ? 8 : 6);
       this.celloGain = 0.46;
+      this.ney = new NeySection(sr, 10);
+      this.neyGain = 0.5;
       this.plucks = Array.from({ length: pluckVoices }, () => new PluckVoice(sr));
       this.drone = Array.from({ length: 8 }, () => new JunoVoice(sr));
       this.ensemble = new Ensemble(sr);
@@ -475,7 +553,7 @@ function TouchGrassEngine() {
     setEnsembleMix(m) { this.ensemble.mix = clamp(m, 0, 1); }
     setMaster(g) { this.masterTarget = clamp(g, 0, 2); }
     setTone(t) { this.toneTarget = clamp(t, 0, 1); }
-    allOff() { this.pending.length = 0; this.cello.allOff(); for (const v of this.plucks) v.stopQuickly(); for (const v of this.drone) v.noteOff(); this.chord = null; }
+    allOff() { this.pending.length = 0; this.cello.allOff(); this.ney.allOff(); for (const v of this.plucks) v.stopQuickly(); for (const v of this.drone) v.noteOff(); this.chord = null; }
     activePlucks() { let n = 0; for (const v of this.plucks) if (v.active) n++; return n; }
 
     updateDecay() {
@@ -485,6 +563,11 @@ function TouchGrassEngine() {
     }
     startNote(note, vel, bright = 1) {
       if (note < 0 || note > 127) return;
+      if (VOICES[this.voiceIndex].blown) {
+        // a breath as long as a third of the ring time asks
+        this.ney.start(note, vel, bright, clamp(this.ringSeconds * 0.3, 0.3, 3), ++this.stamp);
+        return;
+      }
       if (VOICES[this.voiceIndex].bowed) {
         // a bow stroke as long as a third of the ring time asks, then the string rings
         this.cello.start(note, vel, bright, clamp(this.ringSeconds * 0.3, 0.25, 3), ++this.stamp);
@@ -534,6 +617,7 @@ function TouchGrassEngine() {
         let strings = 0;
         for (const v of this.plucks) if (v.active) strings += v.process();
         strings += this.cello.process() * this.celloGain;
+        strings += this.ney.process() * this.neyGain;
 
         this.tone += (this.toneTarget - this.tone) * 0.002;
         if ((this.toneTick++ & 15) === 0) {
@@ -583,7 +667,7 @@ function TouchGrassEngine() {
     }
   }
 
-  return { GrassEngine, plate, VOICES, CelloVoice };
+  return { GrassEngine, plate, VOICES, CelloVoice, NeyVoice };
 }
 
 // The AudioWorklet side: a processor that owns one engine and takes commands

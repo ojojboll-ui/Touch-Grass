@@ -229,10 +229,10 @@ const settings = (() => {
     if (saved && saved.sound && typeof saved.sound === "object") {
       for (const id in saved.sound) {
         const v = saved.sound[id];
-        if (v && Number.isInteger(v.voice) && Number.isFinite(v.ring)) s.sound[id] = { voice: clamp(v.voice, 0, 4), ring: clamp(v.ring, 0.8, 10) };
+        if (v && Number.isInteger(v.voice) && Number.isFinite(v.ring)) s.sound[id] = { voice: clamp(v.voice, 0, 5), ring: clamp(v.ring, 0.8, 10) };
       }
     }
-    if (saved && Number.isInteger(saved.voice)) s.voice = clamp(saved.voice, 0, 4);
+    if (saved && Number.isInteger(saved.voice)) s.voice = clamp(saved.voice, 0, 5);
     if (saved && Number.isFinite(saved.ring)) s.ring = clamp(saved.ring, 0.8, 10);
     if (saved && typeof saved.drone === "boolean") s.drone = saved.drone;
     if (saved && Number.isFinite(saved.droneLevel)) s.droneLevel = clamp(saved.droneLevel, 0, 1);
@@ -1034,7 +1034,7 @@ $("chord-reset").addEventListener("click", () => {
   settings.chords = DEFAULT_CHORDS.map((c) => c.slice());
   saveSettings(); applyChords(); renderChordList();
 });
-const VOICE_NAMES = ["Omni (OM-84)", "Harpa", "Vibrafon", "Gitarr", "Cello"];
+const VOICE_NAMES = ["Omni (OM-84)", "Harpa", "Vibrafon", "Gitarr", "Cello", "Ney"];
 VOICE_NAMES.forEach((name, i) => $("voice").add(new Option(name, i, false, i === settings.voice)));
 $("ring").value = settings.ring;
 $("voice").addEventListener("change", (e) => {
