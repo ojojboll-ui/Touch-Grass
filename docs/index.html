@@ -85,20 +85,18 @@ body {
   -webkit-backdrop-filter: blur(4px); backdrop-filter: blur(4px);
   opacity: 0.7;
 }
-/* Portrait: the chord names in one row along the top, the controls below them.
-   Landscape keeps them down the left edge beside their plates. */
+/* Portrait: the controls in one row along the top, their labels shortened
+   ("Scen:", "Vy:", "Tid" drop away) so all four fit a phone's width.
+   Landscape keeps them stacked in the corner. */
 @media (orientation: portrait) {
-  #plates {
-    inset: calc(10px + env(safe-area-inset-top, 0px)) 0 auto 0;
-    display: flex; flex-wrap: wrap; justify-content: center; gap: 6px;
-    padding-left: max(12px, env(safe-area-inset-left, 0px));
-    padding-right: max(12px, env(safe-area-inset-right, 0px));
+  #controls {
+    left: max(10px, env(safe-area-inset-left, 0px)); right: max(10px, env(safe-area-inset-right, 0px));
+    top: calc(10px + env(safe-area-inset-top, 0px));
+    flex-direction: row; flex-wrap: wrap; justify-content: center; align-items: center; gap: 5px;
   }
-  .plate-name {
-    position: static; transform: scale(var(--lift, 1)); transform-origin: center;
-    font-size: clamp(0.85rem, 3.8vw, 1.15rem); padding: 6px 11px 7px;
-  }
-  #controls { top: calc(58px + env(safe-area-inset-top, 0px)); }
+  #controls .chip { font-size: 0.78rem; padding: 7px 8px; }
+  #controls .pre { display: none; }
+  #timerow { flex-basis: 100%; justify-content: center; }
 }
 #hint {
   position: fixed; z-index: 3; left: 50%; transform: translateX(-50%);
@@ -148,9 +146,9 @@ body {
 <div id="plates"></div>
 <div id="controls" hidden>
   <button class="chip" id="settings-open" type="button">Inställningar</button>
-  <button class="chip" id="scene-next" type="button">Scen: Äng</button>
-  <button class="chip" id="view" type="button">Vy: Ovanifrån</button>
-  <button class="chip" id="clock" type="button">Tid 15:00</button>
+  <button class="chip" id="scene-next" type="button"><span class="pre">Scen: </span>Äng</button>
+  <button class="chip" id="view" type="button"><span class="pre">Vy: </span>Ovanifrån</button>
+  <button class="chip" id="clock" type="button"><span class="pre">Tid </span>15:00</button>
   <div id="timerow" hidden>
     <label for="hour">Tid</label>
     <input id="hour" type="range" min="0" max="24" step="0.05" value="15">
@@ -2013,7 +2011,7 @@ function setScene(id) {
   syncSoundControls();
   document.querySelectorAll(".scene-pick").forEach((b) => b.setAttribute("aria-pressed", String(b.dataset.scene === next.id)));
   const chip = document.getElementById("scene-next");
-  if (chip) chip.textContent = "Scen: " + next.name;
+  if (chip) chip.innerHTML = "<span class=\"pre\">Scen: </span>" + next.name;
   saveSettings();
 }
 function syncSoundControls() {
@@ -2326,7 +2324,7 @@ function applyHour(h) {
   const fogSrgb = k.hor.map((v) => Math.pow(clamp(v, 0, 1), 1 / 2.2));
   renderer.setClearColor(new THREE.Color(...fogSrgb));
   const hh = Math.floor(hour), mm = Math.round((hour - hh) * 60) % 60;
-  $("clock").textContent = `Tid ${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
+  $("clock").innerHTML = `<span class="pre">Tid </span>${String(hh).padStart(2, "0")}:${String(mm).padStart(2, "0")}`;
 }
 
 // ---- camera views ----------------------------------------------------------------
@@ -2338,7 +2336,7 @@ function goToView(i, instant) {
   to = viewState(VIEWS[viewIndex]);
   if (from && to && glide < 1) from.look = currentLook.clone();
   glide = instant ? 1 : 0;
-  $("view").textContent = "Vy: " + VIEWS[viewIndex].name;
+  $("view").innerHTML = "<span class=\"pre\">Vy: </span>" + VIEWS[viewIndex].name;
 }
 const currentLook = new THREE.Vector3();
 function placeCamera(dt, time) {
