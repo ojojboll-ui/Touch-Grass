@@ -2807,7 +2807,10 @@ const cloudScene = (() => {
   const VIEWS_BELOW = [
     { name: "Rakt upp",  pos: [0.0, -11.0, 0.6], look: [0, 0, -1.0], fov: 55 },
     { name: "Snett upp", pos: [0.0, -11.0, 6.0], look: [0, 0, -6.0], fov: 58 },
-    { name: "Horisont",  pos: [0.0, -11.0, 10.0], look: [0, -1, -12], fov: 62 },
+    // tilted up so the bottom of the screen still looks about 6 degrees above
+    // the horizon (the field of view is vertical, so this holds in portrait
+    // too): the lowest chord's strip then reaches clouds within painting reach
+    { name: "Horisont",  pos: [0.0, -11.0, 10.0], look: [0, 2.2, -12], fov: 50 },
   ];
 
   function wrapTarget(res, float) {
@@ -3057,7 +3060,7 @@ const cloudScene = (() => {
   }
 
   // ---- the frame ----------------------------------------------------------------
-  const brushScale = (x, z) => clamp(Math.hypot(x - camera.position.x, camera.position.y, z - camera.position.z) / 14, 1, 5);
+  const brushScale = (x, z) => clamp(Math.hypot(x - camera.position.x, camera.position.y, z - camera.position.z) / 14, 1, 8);
   const edits = [];
   function edit(ax, az, bx, bz, radius, kind, amount, push = 0) {
     if (edits.length < MAX_EDIT) edits.push([ax - offset.x, az - offset.y, bx - offset.x, bz - offset.y, radius, kind, amount, push]);
