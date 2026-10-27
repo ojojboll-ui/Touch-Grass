@@ -190,10 +190,12 @@ function TouchGrassEngine() {
 
   function softClip(x) { x = clamp(x, -3, 3); return x * (27 + x * x) / (27 + 9 * x * x); }
 
-  // The clouds' patch: PAD's oscillators with a quicker, brighter bloom, so a
-  // strum still articulates each string, and a release the ring time sets
-  const CLOUD = { saw: 0.75, pulse: 0.50, sub: 0.25, noise: 0.0, pw: 0.50, pwm: 0.45, lfoRate: 0.5,
-                  env: 0.40, key: 0.30, hpf: 0.10, A: 0.035, D: 1.40, S: 0.55, R: 1.60, level: 0.60 };
+  // The clouds' patch: a soft brass after Chordtroller's BRASS. Saw-heavy, the
+  // swell slower than a horn's bite, the filter low and opening only a little
+  // with the envelope, so it is round rather than bright; the release is set
+  // from the ring time
+  const CLOUD = { saw: 0.90, pulse: 0.15, sub: 0.30, noise: 0.0, pw: 0.50, pwm: 0.10, lfoRate: 0.5,
+                  env: 0.30, key: 0.30, hpf: 0.05, A: 0.09, D: 0.80, S: 0.70, R: 1.00, level: 0.60 };
 
   class JunoVoice {
     constructor(sr, patch = PAD) {
@@ -457,7 +459,7 @@ function TouchGrassEngine() {
       vs[k].setRelease(releaseSeconds);
       vs[k].noteOn(note, 0.55 + 0.45 * clamp(velocity, 0, 1), stamp);
       this.hold[k] = holdSeconds * this.sr;
-      this.cut[k] = 0.30 + 0.22 * clamp(bright, 0, 1);
+      this.cut[k] = 0.20 + 0.12 * clamp(bright, 0, 1);
     }
     allOff() { for (const v of this.voices) v.noteOff(); }
     process() {
@@ -468,7 +470,7 @@ function TouchGrassEngine() {
         const v = this.voices[k];
         if (!v.active) continue;
         if (v.gateOn && --this.hold[k] <= 0) v.noteOff();
-        s += v.process(lfo, this.cut[k], 0.18, 1);
+        s += v.process(lfo, this.cut[k], 0.08, 1);
       }
       return s;
     }

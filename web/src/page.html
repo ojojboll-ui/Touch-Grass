@@ -462,7 +462,7 @@ const glowMat = new THREE.SpriteMaterial({ map: dotTex, color: 0xfff1cf, transpa
 // ---- the scenes ------------------------------------------------------------------
 /*SCENES*/
 
-const SCENES = [meadowScene, waterScene, sandScene, cloudScene];
+const SCENES = [meadowScene, waterScene, sandScene, cloudScene, bubbleScene];
 let activeScene = meadowScene;
 
 // Switch scene: its surface replaces the last one, fingers meet it at its
@@ -470,12 +470,14 @@ let activeScene = meadowScene;
 // changed in a scene is remembered for that scene.
 function setScene(id) {
   const next = SCENES.find((sc) => sc.id === id) || meadowScene;
+  const newViews = (next.views || VIEWS) !== viewsNow();
   if (activeScene !== next) { scene.remove(activeScene.group); activeScene.exit(); }
   activeScene = next;
   if (!next.group.parent) scene.add(next.group);
   next.enter();
   next.resize();
   plane.constant = -next.touchHeight;
+  if (newViews) goToView(viewIndex, !started);
   settings.scene = next.id;
   const snd = settings.sound[next.id] || next.sound;
   settings.voice = snd.voice;
@@ -825,14 +827,18 @@ function applyHour(h) {
 
 // ---- camera views ----------------------------------------------------------------
 let viewIndex = 0, glide = 1, from = null, to = null;
+function viewScaleNow() { return clamp(Math.abs(camera.position.y - activeScene.touchHeight) / 11, 0.6, 1.6); }
 function viewState(v) { return { pos: new THREE.Vector3(...v.pos), look: new THREE.Vector3(...v.look), fov: v.fov }; }
+// a scene may bring its own views (the clouds are seen from below)
+function viewsNow() { return (activeScene && activeScene.views) || VIEWS; }
 function goToView(i, instant) {
-  viewIndex = ((i % VIEWS.length) + VIEWS.length) % VIEWS.length;
-  from = to ? { pos: camera.position.clone(), look: to.look.clone(), fov: camera.fov } : viewState(VIEWS[viewIndex]);
-  to = viewState(VIEWS[viewIndex]);
+  const views = viewsNow();
+  viewIndex = ((i % views.length) + views.length) % views.length;
+  from = to ? { pos: camera.position.clone(), look: to.look.clone(), fov: camera.fov } : viewState(views[viewIndex]);
+  to = viewState(views[viewIndex]);
   if (from && to && glide < 1) from.look = currentLook.clone();
   glide = instant ? 1 : 0;
-  $("view").innerHTML = "<span class=\"pre\">Vy: </span>" + VIEWS[viewIndex].name;
+  $("view").innerHTML = "<span class=\"pre\">Vy: </span>" + views[viewIndex].name;
 }
 const currentLook = new THREE.Vector3();
 function placeCamera(dt, time) {
@@ -880,7 +886,7 @@ function frame(now) {
 
   // hand the fingers to the scene; each finger's glow sits on its surface
   const touches = [];
-  const viewScale = clamp(camera.position.y / 11, 0.6, 1.6);
+  const viewScale = viewScaleNow();
   for (const f of fingers.values()) {
     const sp = f.vel.length();
     const k = sp > 1e-3 ? clamp(sp / 3, 0, 1) / sp : 0;

@@ -1,28 +1,34 @@
 // ---- scene: clouds ----------------------------------------------------------------
-// Above a sea of cumulus, with the land far below. Where a finger lands decides
-// what it does: on open sky it draws new cloud along its path; on a cloud it
-// pulls the cloud along with it, and the cloud thins out as it is stretched; a
-// poke into a cloud opens a hole, and a finger left resting there keeps
-// widening it, the cloud pushed aside into a ring. The clouds drift on the wind,
-// their tops slowly boiling, and the plucked strings' rings glow in them.
+// Lying on your back under a sky of cumulus. Where a finger lands decides what it
+// does: on open sky it draws new cloud along its path; on a cloud it pulls the
+// cloud along with it, and the cloud thins out as it is stretched; a poke into a
+// cloud opens a hole, and a finger left resting there keeps widening it, the
+// cloud pushed aside into a ring. The clouds drift on the wind and slowly boil,
+// the plucked strings' rings glow in them, and behind them the sky follows the
+// clock: the sun crossing by day, the moon and the stars at night.
 //
 // How it is drawn: a density field (half float, wrapping, so the clouds that
 // drift off one side come back on the other) holds what fingers have made. A
-// second pass turns density into a cloud shape (height, with noise for the
-// cauliflower tops) and lights it: sun on the slopes, self-shadow toward the
-// sun, darker hollows. Each pixel then marches its view ray down through the
-// shape: a thick cloud turns opaque within a metre, a stretched one is shallow
-// and stays sheer. (Stacked slices were tried first; seen at a slant they
-// stepped like terraces.) The field is never advected by the wind; it is drawn
-// at an offset instead, so drifting costs nothing and blurs nothing.
+// second pass turns density into a cloud shape: how tall the cloud stands above
+// its flat base, with noise for the billows. Each pixel then marches its view
+// ray up through that shape, lighting each step by how much cloud lies between
+// it and the sun: thick bases go grey, thin edges glow, brightest toward the
+// sun. (Stacked slices were tried first; seen at a slant they stepped like
+// terraces.) The field is never advected by the wind; it is drawn at an offset
+// instead, so drifting costs nothing and blurs nothing.
 const cloudScene = (() => {
   const group = new THREE.Group();
   const SIZE = 48, RES = 256, SHAPE_RES = 512;
   const TOP = 3.6, MARCH_STEPS = 16;        // the cloud layer's depth, and the steps a ray takes through it
-  const GROUND = -30;                        // the land, far below
   const MAX_EDIT = 10;
   const WIND = new THREE.Vector2(0.8, 0.6), DRIFT = 0.22;   // metres a second
   const TONEMAP = "vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }";
+  // seen from the ground, eleven metres under the cloud base
+  const VIEWS_BELOW = [
+    { name: "Rakt upp",  pos: [0.0, -11.0, 0.6], look: [0, 0, -1.0], fov: 55 },
+    { name: "Snett upp", pos: [0.0, -11.0, 6.0], look: [0, 0, -6.0], fov: 58 },
+    { name: "Horisont",  pos: [0.0, -11.0, 10.0], look: [0, -4, -12], fov: 62 },
+  ];
 
   function wrapTarget(res, float) {
     return new THREE.WebGLRenderTarget(res, res, {
@@ -94,158 +100,169 @@ const cloudScene = (() => {
       }`,
   });
 
-  // ---- the shape: height of the cloud tops, and how they are lit ----
+  // ---- the shape: how tall each cloud stands above its flat base ----
   const shapeMat = new THREE.ShaderMaterial({
     vertexShader: PASS_VERT,
-    uniforms: Object.assign({ uField: { value: fieldA.texture }, uNoise: { value: noiseTex }, uTime: { value: 0 }, uSize: { value: SIZE } }, lightUniforms),
+    uniforms: { uField: { value: fieldA.texture }, uNoise: { value: noiseTex }, uTime: { value: 0 } },
     fragmentShader: `
-      uniform sampler2D uField, uNoise; uniform float uTime, uSize;
-      uniform vec3 uSunDir;
+      uniform sampler2D uField, uNoise; uniform float uTime;
       varying vec2 vUv;
-      float heightAt(vec2 uv) {
-        float v = texture2D(uField, uv).r;
-        float d = ${DEC};
-        // the tops boil slowly: noise drifting two ways (whole-number scales, so it wraps with the field)
-        vec2 drift = vec2(uTime * 0.0021, uTime * 0.0013);
-        float n = texture2D(uNoise, uv * 3.0 + drift).b * 0.55 + texture2D(uNoise, uv * 7.0 - drift * 1.7).b * 0.33
-                + texture2D(uNoise, uv * 19.0 + drift * 2.3).b * 0.12;
-        // rounded heaps, not peaks: height rises fast at a cloud's edge and
-        // flattens over its middle, as a cumulus does
-        float x = max(0.0, d * (0.45 + 1.1 * n) - 0.1);
-        return 3.2 * pow(x, 0.7);
-      }
       void main() {
-        float e = 1.5 / ${SHAPE_RES}.0;
-        float h = heightAt(vUv);
-        float hx = heightAt(vUv + vec2(e, 0.0)) - heightAt(vUv - vec2(e, 0.0));
-        float hz = heightAt(vUv + vec2(0.0, e)) - heightAt(vUv - vec2(0.0, e));
-        vec3 n = normalize(vec3(-hx / (2.0 * e * uSize), 1.0, -hz / (2.0 * e * uSize)));
-        float lam = dot(n, uSunDir) * 0.5 + 0.5;                 // wrapped: clouds scatter light round their sides
-        // self-shadow: is there taller cloud between here and the sun?
-        vec2 toward = uSunDir.xz / max(length(uSunDir.xz), 1e-3);
-        float rise = uSunDir.y / max(length(uSunDir.xz), 0.05);
-        float shade = 0.0;
-        for (int k = 1; k <= 3; k++) {
-          float dist = float(k) * 0.6;
-          float above = heightAt(vUv + toward * dist / uSize) - (h + dist * rise);
-          shade = max(shade, smoothstep(0.0, 0.6, above));
-        }
-        // hollows: lower than the cloud around them
-        float around = (heightAt(vUv + vec2(4.0 * e, 0.0)) + heightAt(vUv - vec2(4.0 * e, 0.0))
-                      + heightAt(vUv + vec2(0.0, 4.0 * e)) + heightAt(vUv - vec2(0.0, 4.0 * e))) * 0.25;
-        float hollow = clamp(1.0 - (around - h) * 1.2, 0.0, 1.0);
-        gl_FragColor = vec4(h / 3.0, lam * (1.0 - 0.55 * shade), hollow, 1.0);
+        float v = texture2D(uField, vUv).r;
+        float d = ${DEC};
+        // the billows boil slowly: noise drifting two ways (whole-number scales,
+        // so it wraps with the field); mostly broad, little fine, so the tops
+        // round over instead of standing in points
+        vec2 drift = vec2(uTime * 0.0021, uTime * 0.0013);
+        float n = texture2D(uNoise, vUv * 3.0 + drift).b * 0.62 + texture2D(uNoise, vUv * 7.0 - drift * 1.7).b * 0.3
+                + texture2D(uNoise, vUv * 17.0 + drift * 2.3).b * 0.08;
+        // each heap rounds over like a quarter circle: steep at its edge, flat
+        // on top, never a point. How tall a heap stands comes from a broad
+        // noise of its own, so some tower and some stay low. g keeps how far
+        // into the cloud this is, so stretched cloud can stay sheer
+        float x = max(0.0, d * (0.5 + 1.0 * n) - 0.1);
+        float s = clamp(x / 0.45, 0.0, 1.0);
+        float tower = 1.2 + 1.7 * texture2D(uNoise, vUv * 4.0 + drift * 0.5).b;
+        gl_FragColor = vec4(tower * sqrt(s * (2.0 - s)) / 3.0, s, 0.0, 1.0);
       }`,
   });
 
-  // ---- the volume: rays marched down through the shape ----
-  // One sheet over the top of the cloud layer; each pixel follows its view ray
-  // down through the layer in a fixed number of steps (offset a little per
-  // pixel, so the steps blur into a volume), gathering light where the ray is
-  // inside a cloud, until the cloud is opaque or the ray reaches the base.
+  // ---- the sky behind: gradient, sun, moon, stars ----
+  const trueSun = new THREE.Vector3(), moon = new THREE.Vector3();
+  const skyMat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({ uTrueSun: { value: trueSun }, uMoon: { value: moon }, uNoise: { value: noiseTex }, uTime: { value: 0 } }, lightUniforms),
+    side: THREE.BackSide, depthWrite: false, depthTest: false,
+    vertexShader: `
+      varying vec3 vDir;
+      void main() { vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      uniform vec3 uTrueSun, uMoon, uSunCol, uFogCol; uniform float uTime;
+      uniform sampler2D uNoise;
+      varying vec3 vDir;
+      ${TONEMAP}
+      float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+      vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
+      float stars(vec3 d, float cells, float keep) {
+        vec2 g = vec2(atan(d.z, d.x), asin(clamp(d.y, -1.0, 1.0))) * cells / 3.14159;
+        vec2 c = floor(g), f = fract(g) - 0.5;
+        float h = hash12(c);
+        if (h < keep) return 0.0;
+        float r = length(f - (hash22(c + 4.1) - 0.5) * 0.6);
+        float twinkle = 0.65 + 0.35 * sin(uTime * (1.5 + 4.0 * h) + h * 40.0);
+        return smoothstep(0.1, 0.0, r) * (h - keep) / (1.0 - keep) * twinkle;
+      }
+      void main() {
+        vec3 d = normalize(vDir);
+        float day = smoothstep(-0.12, 0.22, uTrueSun.y);
+        vec3 zen = mix(vec3(0.010, 0.016, 0.040), vec3(0.16, 0.34, 0.72), day);
+        vec3 sky = mix(uFogCol, zen, pow(clamp(d.y, 0.0, 1.0), 0.55));
+        // below the horizon, the land: dark under a band of haze
+        vec3 land = uFogCol * 0.3 + vec3(0.02, 0.03, 0.015);
+        sky = mix(sky, land, smoothstep(0.0, -0.06, d.y));
+        // the sun: a glow round it, wide and warm when it is low, and its disc
+        float cs = dot(d, uTrueSun);
+        float above = smoothstep(-0.02, 0.01, d.y);
+        sky += uSunCol * (pow(max(cs, 0.0), 8.0) * 0.3 + pow(max(cs, 0.0), 90.0) * 0.8) * (1.2 - 0.6 * day) * above;
+        sky += vec3(1.0, 0.92, 0.78) * 7.0 * smoothstep(0.99955, 0.9997, cs) * above;
+        // the moon: a mottled disc and a faint halo, brightest at night
+        float night = 1.0 - day;
+        float cm = dot(d, uMoon);
+        float disc = smoothstep(0.99935, 0.9995, cm) * above;
+        vec3 mside = d - uMoon * cm;
+        float mare = texture2D(uNoise, mside.xy * 18.0 + mside.z * 9.0 + 0.3).g;
+        vec3 moonCol = vec3(0.92, 0.92, 0.86) * (0.7 + 0.5 * smoothstep(0.4, 0.6, mare)) * (0.35 + 1.4 * night);
+        sky = mix(sky, moonCol, disc * (0.45 + 0.55 * night));
+        sky += vec3(0.6, 0.65, 0.8) * pow(max(cm, 0.0), 300.0) * 0.25 * night * above;
+        // the stars, coming out as the sun goes down
+        float st = stars(d, 70.0, 0.965) * 1.6 + stars(d, 160.0, 0.975) * 0.7;
+        sky += vec3(0.9, 0.93, 1.0) * st * smoothstep(0.35, 0.95, night) * smoothstep(-0.02, 0.12, d.y) * (1.0 - disc);
+        gl_FragColor = vec4(pow(tonemap(sky), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 48, 24), skyMat);
+  sky.renderOrder = -10;
+  sky.frustumCulled = false;
+  group.add(sky);
+
+  // ---- the volume: rays marched up through the shape ----
+  // One sheet under the cloud base; each pixel follows its view ray up through
+  // the layer in a fixed number of steps (offset a little per pixel, so the
+  // steps blur into a volume), gathering light where the ray is inside a cloud,
+  // until the cloud is opaque or the ray leaves the top.
   const offset = new THREE.Vector2();
   const marchUniforms = Object.assign({
     uShapeTex: { value: shapeRT.texture }, uOffset: { value: offset }, uSize: { value: SIZE },
     uRipple: { value: rippleRT.texture }, uRippleRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
-    uMusic: { value: new THREE.Vector3() },
+    uMusic: { value: new THREE.Vector3() }, uTrueSun: { value: trueSun },
   }, lightUniforms);
   const marchMat = new THREE.ShaderMaterial({
     uniforms: marchUniforms,
-    transparent: true, depthWrite: false,
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
     vertexShader: `
       varying vec3 vWorld;
       void main() { vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
     fragmentShader: `
       uniform sampler2D uShapeTex, uRipple; uniform vec2 uOffset; uniform float uSize;
-      uniform vec3 uRippleRect, uMusic;
+      uniform vec3 uRippleRect, uMusic, uTrueSun;
       uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
       varying vec3 vWorld;
       ${TONEMAP}
       void main() {
         vec3 rd = normalize(vWorld - cameraPosition);
+        if (rd.y < 0.02) discard;
         vec2 toward = uSunDir.xz / max(length(uSunDir.xz), 1e-3);
         float rise = uSunDir.y / max(length(uSunDir.xz), 0.05);
-        if (rd.y > -0.02) discard;
-        float t0 = max((${TOP.toFixed(2)} - cameraPosition.y) / rd.y, 0.0);
-        float t1 = -cameraPosition.y / rd.y;
+        float t0 = max(-cameraPosition.y / rd.y, 0.0);
+        float t1 = (${TOP.toFixed(2)} - cameraPosition.y) / rd.y;
         float dt = (t1 - t0) / ${MARCH_STEPS}.0;
-        float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+        // interleaved gradient noise: each pixel starts its steps a little
+        // further along, in a fine even pattern rather than clumpy grain
+        float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        // light scattered forward: a cloud's edges blaze when you look toward the sun
+        float silver = 1.0 + 2.5 * pow(max(dot(rd, uSunDir), 0.0), 6.0);
         vec3 col = vec3(0.0);
         float trans = 1.0, hitT = t1;
         for (int i = 0; i < ${MARCH_STEPS}; i++) {
           float t = t0 + (float(i) + jitter) * dt;
           vec3 p = cameraPosition + rd * t;
-          vec4 s = texture2D(uShapeTex, (p.xz - uOffset) / uSize);
-          float h = s.r * 3.0;
+          vec4 sh = texture2D(uShapeTex, (p.xz - uOffset) / uSize);
+          float h = sh.r * 3.0;
           float inside = h - p.y;
           if (inside > 0.0) {
             // a thick cloud fills up within a metre; a thin one stays sheer
-            float a = 1.0 - exp(-2.4 * dt * smoothstep(0.0, 0.5, inside) * min(1.0, h / 0.6 + 0.25));
-            float top = clamp(p.y / max(h, 0.01), 0.0, 1.0);
-            // one step toward the sun: how much cloud stands between this point
-            // and the light. Sunlit tops go white, the far sides and the bases
-            // fall into the sky's blue
-            float hs = texture2D(uShapeTex, (p.xz + toward * 0.7 - uOffset) / uSize).r * 3.0;
-            float sunVis = exp(-2.2 * max(0.0, hs - (p.y + 0.7 * rise))) * mix(0.55, 1.0, s.g);
-            vec3 lit = uSunCol * (0.05 + 1.35 * sunVis) + uAmbient * (0.4 + 0.45 * top);
-            lit *= mix(0.6, 1.0, top) * mix(0.65, 1.0, s.b);
+            float a = 1.0 - exp(-2.4 * dt * smoothstep(0.0, 0.5, inside) * (0.2 + 0.8 * sh.g));
+            // how much cloud lies between here and the sun: straight up to the
+            // top, slanted by the sun's height, and one look toward it for the
+            // cloud beside
+            float hs = texture2D(uShapeTex, (p.xz + toward * 0.8 - uOffset) / uSize).r * 3.0;
+            float thick = inside / max(uSunDir.y, 0.3) + max(0.0, hs - (p.y + 0.8 * rise));
+            float sunVis = exp(-0.9 * thick);
+            float up = clamp(p.y / max(h, 0.01), 0.0, 1.0);
+            vec3 lit = uSunCol * sunVis * silver * 1.1 + uAmbient * (0.3 + 0.5 * up) + uSunCol * 0.04;
             if (trans > 0.99) hitT = t;
             col += trans * a * lit;
             trans *= 1.0 - a;
             if (trans < 0.02) break;
           }
         }
+        // the farthest clouds, too far to march finely, fade into the horizon's haze
+        trans = mix(trans, 1.0, smoothstep(90.0, 200.0, t0));
         if (trans > 0.995) discard;
         float alpha = 1.0 - trans;
         col /= alpha;
         vec3 hit = cameraPosition + rd * hitT;
         vec3 ring = texture2D(uRipple, (hit.xz - uRippleRect.xy) / uRippleRect.z).rgb;
         col += ring * (0.5 + 0.4 * uMusic.z);
-        float fog = 1.0 - exp(-uFogDensity * 0.5 * hitT);
+        // far clouds fade into the haze at the horizon
+        float fog = 1.0 - exp(-uFogDensity * 0.6 * hitT);
         gl_FragColor = vec4(pow(tonemap(mix(col, uFogCol, fog)), vec3(1.0 / 2.2)), alpha);
       }`,
   });
-  const sheet = new THREE.Mesh(new THREE.PlaneGeometry(240, 240), marchMat);
+  const sheet = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), marchMat);
   sheet.rotation.x = -Math.PI / 2;
-  sheet.position.y = TOP;
+  sheet.position.y = 0;
   sheet.renderOrder = 10;
   group.add(sheet);
-
-  // ---- the land far below, seen through the holes, under the clouds' shadows ----
-  const groundMat = new THREE.ShaderMaterial({
-    uniforms: Object.assign({ uNoise: { value: noiseTex }, uShapeTex: { value: shapeRT.texture }, uOffset: { value: offset }, uSize: { value: SIZE } }, lightUniforms),
-    vertexShader: `
-      varying vec3 vWorld;
-      void main() { vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: `
-      uniform sampler2D uNoise, uShapeTex; uniform vec2 uOffset; uniform float uSize;
-      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
-      varying vec3 vWorld;
-      ${TONEMAP}
-      void main() {
-        vec2 xz = vWorld.xz;
-        float land = texture2D(uNoise, xz / 260.0).g + (texture2D(uNoise, xz / 70.0).b - 0.5) * 0.25;
-        float shore = smoothstep(0.47, 0.5, land);
-        vec3 sea = mix(vec3(0.06, 0.18, 0.30), vec3(0.08, 0.24, 0.34), texture2D(uNoise, xz / 90.0).r * 0.5);
-        float fields = texture2D(uNoise, xz / 22.0).b;
-        vec3 earth = mix(vec3(0.20, 0.32, 0.12), vec3(0.42, 0.40, 0.20), fields);
-        earth = mix(earth, vec3(0.14, 0.24, 0.10), smoothstep(0.55, 0.65, texture2D(uNoise, xz / 40.0).g));
-        vec3 col = mix(sea, earth, shore);
-        col = mix(col, vec3(0.62, 0.6, 0.5), 0.5 * smoothstep(0.47, 0.475, land) * (1.0 - smoothstep(0.477, 0.485, land)));
-        // the clouds' shadows: follow the sun up to the cloud layer
-        vec2 up = xz + uSunDir.xz / max(uSunDir.y, 0.15) * (${-GROUND}.0 + 1.0);
-        float cloud = texture2D(uShapeTex, (up - uOffset) / uSize).r * 3.0;
-        float lightHere = 1.0 - 0.6 * smoothstep(0.1, 0.8, cloud);
-        vec3 lit = col * (uAmbient * 0.7 + uSunCol * max(uSunDir.y, 0.0) * 0.9 * lightHere);
-        float fog = 1.0 - exp(-uFogDensity * 2.4 * length(vWorld - cameraPosition));
-        gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
-      }`,
-  });
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), groundMat);
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = GROUND;
-  ground.renderOrder = 0;
-  group.add(ground);
 
   // ---- looking under a finger: is it on a cloud? ----
   const probe = new Uint8Array(4);
@@ -270,7 +287,12 @@ const cloudScene = (() => {
     offset.x = (offset.x + WIND.x * DRIFT * dt) % SIZE;
     offset.y = (offset.y + WIND.y * DRIFT * dt) % SIZE;
     marchUniforms.uMusic.value.copy(music);
-    const viewScale = clamp(camera.position.y / 11, 0.6, 1.6);
+    // the sky follows the clock: the sun where the hour puts it, the moon across from it
+    trueSun.copy(sunDirection(hour));
+    moon.copy(sunDirection((hour + 12) % 24)).add(new THREE.Vector3(0.15, 0.05, 0.1)).normalize();
+    skyMat.uniforms.uTime.value = time;
+    sky.position.copy(camera.position);
+    const viewScale = viewScaleNow();
     const frames = dt * 60;
     mistTime += dt;
     const mist = mistTime > 0.08;
@@ -280,7 +302,7 @@ const cloudScene = (() => {
       if (!f.cloudMode) f.cloudMode = "sky";
       if (f.cloudMode === "sky") {
         edit(t.px, t.pz, t.x, t.z, 0.75 * viewScale * (1 + 0.5 * t.depth), 0, (0.07 + 0.05 * t.depth) * frames);
-        if (mist && moved > 0.01) burst({ x: t.x, y: 1.2, z: t.z }, MIST, 0.15, "pollen", 2);
+        if (mist && moved > 0.01) burst({ x: t.x, y: 0, z: t.z }, MIST, 0.15, "pollen", 2);
       } else if (moved > 0.004) {
         // pulling the cloud along; the faster the pull, the thinner it goes
         const R = 1.2 * viewScale * (1 + 0.4 * t.depth);
@@ -324,8 +346,9 @@ const cloudScene = (() => {
 
   return {
     id: "clouds", name: "Moln", group,
+    views: VIEWS_BELOW,
     sound: { voice: 6, ring: 6, wet: 0.5 },
-    touchHeight: 1.2, glowHeight: 1.6,
+    touchHeight: 0.0, glowHeight: -0.1,
     resize() {},
     update,
     tune() {},

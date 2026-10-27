@@ -390,10 +390,12 @@ function TouchGrassEngine() {
 
   function softClip(x) { x = clamp(x, -3, 3); return x * (27 + x * x) / (27 + 9 * x * x); }
 
-  // The clouds' patch: PAD's oscillators with a quicker, brighter bloom, so a
-  // strum still articulates each string, and a release the ring time sets
-  const CLOUD = { saw: 0.75, pulse: 0.50, sub: 0.25, noise: 0.0, pw: 0.50, pwm: 0.45, lfoRate: 0.5,
-                  env: 0.40, key: 0.30, hpf: 0.10, A: 0.035, D: 1.40, S: 0.55, R: 1.60, level: 0.60 };
+  // The clouds' patch: a soft brass after Chordtroller's BRASS. Saw-heavy, the
+  // swell slower than a horn's bite, the filter low and opening only a little
+  // with the envelope, so it is round rather than bright; the release is set
+  // from the ring time
+  const CLOUD = { saw: 0.90, pulse: 0.15, sub: 0.30, noise: 0.0, pw: 0.50, pwm: 0.10, lfoRate: 0.5,
+                  env: 0.30, key: 0.30, hpf: 0.05, A: 0.09, D: 0.80, S: 0.70, R: 1.00, level: 0.60 };
 
   class JunoVoice {
     constructor(sr, patch = PAD) {
@@ -657,7 +659,7 @@ function TouchGrassEngine() {
       vs[k].setRelease(releaseSeconds);
       vs[k].noteOn(note, 0.55 + 0.45 * clamp(velocity, 0, 1), stamp);
       this.hold[k] = holdSeconds * this.sr;
-      this.cut[k] = 0.30 + 0.22 * clamp(bright, 0, 1);
+      this.cut[k] = 0.20 + 0.12 * clamp(bright, 0, 1);
     }
     allOff() { for (const v of this.voices) v.noteOff(); }
     process() {
@@ -668,7 +670,7 @@ function TouchGrassEngine() {
         const v = this.voices[k];
         if (!v.active) continue;
         if (v.gateOn && --this.hold[k] <= 0) v.noteOff();
-        s += v.process(lfo, this.cut[k], 0.18, 1);
+        s += v.process(lfo, this.cut[k], 0.08, 1);
       }
       return s;
     }
@@ -2636,7 +2638,7 @@ const sandScene = (() => {
   function update(dt, touches, time) {
     common.uTime.value = time;
     common.uMusic.value.copy(music);
-    const viewScale = clamp(camera.position.y / 11, 0.6, 1.6);
+    const viewScale = viewScaleNow();
     const wind = blow(dt);
     moveGrains(dt, wind);
 
@@ -2747,30 +2749,36 @@ const sandScene = (() => {
 
 
 // ---- scene: clouds ----------------------------------------------------------------
-// Above a sea of cumulus, with the land far below. Where a finger lands decides
-// what it does: on open sky it draws new cloud along its path; on a cloud it
-// pulls the cloud along with it, and the cloud thins out as it is stretched; a
-// poke into a cloud opens a hole, and a finger left resting there keeps
-// widening it, the cloud pushed aside into a ring. The clouds drift on the wind,
-// their tops slowly boiling, and the plucked strings' rings glow in them.
+// Lying on your back under a sky of cumulus. Where a finger lands decides what it
+// does: on open sky it draws new cloud along its path; on a cloud it pulls the
+// cloud along with it, and the cloud thins out as it is stretched; a poke into a
+// cloud opens a hole, and a finger left resting there keeps widening it, the
+// cloud pushed aside into a ring. The clouds drift on the wind and slowly boil,
+// the plucked strings' rings glow in them, and behind them the sky follows the
+// clock: the sun crossing by day, the moon and the stars at night.
 //
 // How it is drawn: a density field (half float, wrapping, so the clouds that
 // drift off one side come back on the other) holds what fingers have made. A
-// second pass turns density into a cloud shape (height, with noise for the
-// cauliflower tops) and lights it: sun on the slopes, self-shadow toward the
-// sun, darker hollows. Each pixel then marches its view ray down through the
-// shape: a thick cloud turns opaque within a metre, a stretched one is shallow
-// and stays sheer. (Stacked slices were tried first; seen at a slant they
-// stepped like terraces.) The field is never advected by the wind; it is drawn
-// at an offset instead, so drifting costs nothing and blurs nothing.
+// second pass turns density into a cloud shape: how tall the cloud stands above
+// its flat base, with noise for the billows. Each pixel then marches its view
+// ray up through that shape, lighting each step by how much cloud lies between
+// it and the sun: thick bases go grey, thin edges glow, brightest toward the
+// sun. (Stacked slices were tried first; seen at a slant they stepped like
+// terraces.) The field is never advected by the wind; it is drawn at an offset
+// instead, so drifting costs nothing and blurs nothing.
 const cloudScene = (() => {
   const group = new THREE.Group();
   const SIZE = 48, RES = 256, SHAPE_RES = 512;
   const TOP = 3.6, MARCH_STEPS = 16;        // the cloud layer's depth, and the steps a ray takes through it
-  const GROUND = -30;                        // the land, far below
   const MAX_EDIT = 10;
   const WIND = new THREE.Vector2(0.8, 0.6), DRIFT = 0.22;   // metres a second
   const TONEMAP = "vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }";
+  // seen from the ground, eleven metres under the cloud base
+  const VIEWS_BELOW = [
+    { name: "Rakt upp",  pos: [0.0, -11.0, 0.6], look: [0, 0, -1.0], fov: 55 },
+    { name: "Snett upp", pos: [0.0, -11.0, 6.0], look: [0, 0, -6.0], fov: 58 },
+    { name: "Horisont",  pos: [0.0, -11.0, 10.0], look: [0, -4, -12], fov: 62 },
+  ];
 
   function wrapTarget(res, float) {
     return new THREE.WebGLRenderTarget(res, res, {
@@ -2842,158 +2850,169 @@ const cloudScene = (() => {
       }`,
   });
 
-  // ---- the shape: height of the cloud tops, and how they are lit ----
+  // ---- the shape: how tall each cloud stands above its flat base ----
   const shapeMat = new THREE.ShaderMaterial({
     vertexShader: PASS_VERT,
-    uniforms: Object.assign({ uField: { value: fieldA.texture }, uNoise: { value: noiseTex }, uTime: { value: 0 }, uSize: { value: SIZE } }, lightUniforms),
+    uniforms: { uField: { value: fieldA.texture }, uNoise: { value: noiseTex }, uTime: { value: 0 } },
     fragmentShader: `
-      uniform sampler2D uField, uNoise; uniform float uTime, uSize;
-      uniform vec3 uSunDir;
+      uniform sampler2D uField, uNoise; uniform float uTime;
       varying vec2 vUv;
-      float heightAt(vec2 uv) {
-        float v = texture2D(uField, uv).r;
-        float d = ${DEC};
-        // the tops boil slowly: noise drifting two ways (whole-number scales, so it wraps with the field)
-        vec2 drift = vec2(uTime * 0.0021, uTime * 0.0013);
-        float n = texture2D(uNoise, uv * 3.0 + drift).b * 0.55 + texture2D(uNoise, uv * 7.0 - drift * 1.7).b * 0.33
-                + texture2D(uNoise, uv * 19.0 + drift * 2.3).b * 0.12;
-        // rounded heaps, not peaks: height rises fast at a cloud's edge and
-        // flattens over its middle, as a cumulus does
-        float x = max(0.0, d * (0.45 + 1.1 * n) - 0.1);
-        return 3.2 * pow(x, 0.7);
-      }
       void main() {
-        float e = 1.5 / ${SHAPE_RES}.0;
-        float h = heightAt(vUv);
-        float hx = heightAt(vUv + vec2(e, 0.0)) - heightAt(vUv - vec2(e, 0.0));
-        float hz = heightAt(vUv + vec2(0.0, e)) - heightAt(vUv - vec2(0.0, e));
-        vec3 n = normalize(vec3(-hx / (2.0 * e * uSize), 1.0, -hz / (2.0 * e * uSize)));
-        float lam = dot(n, uSunDir) * 0.5 + 0.5;                 // wrapped: clouds scatter light round their sides
-        // self-shadow: is there taller cloud between here and the sun?
-        vec2 toward = uSunDir.xz / max(length(uSunDir.xz), 1e-3);
-        float rise = uSunDir.y / max(length(uSunDir.xz), 0.05);
-        float shade = 0.0;
-        for (int k = 1; k <= 3; k++) {
-          float dist = float(k) * 0.6;
-          float above = heightAt(vUv + toward * dist / uSize) - (h + dist * rise);
-          shade = max(shade, smoothstep(0.0, 0.6, above));
-        }
-        // hollows: lower than the cloud around them
-        float around = (heightAt(vUv + vec2(4.0 * e, 0.0)) + heightAt(vUv - vec2(4.0 * e, 0.0))
-                      + heightAt(vUv + vec2(0.0, 4.0 * e)) + heightAt(vUv - vec2(0.0, 4.0 * e))) * 0.25;
-        float hollow = clamp(1.0 - (around - h) * 1.2, 0.0, 1.0);
-        gl_FragColor = vec4(h / 3.0, lam * (1.0 - 0.55 * shade), hollow, 1.0);
+        float v = texture2D(uField, vUv).r;
+        float d = ${DEC};
+        // the billows boil slowly: noise drifting two ways (whole-number scales,
+        // so it wraps with the field); mostly broad, little fine, so the tops
+        // round over instead of standing in points
+        vec2 drift = vec2(uTime * 0.0021, uTime * 0.0013);
+        float n = texture2D(uNoise, vUv * 3.0 + drift).b * 0.62 + texture2D(uNoise, vUv * 7.0 - drift * 1.7).b * 0.3
+                + texture2D(uNoise, vUv * 17.0 + drift * 2.3).b * 0.08;
+        // each heap rounds over like a quarter circle: steep at its edge, flat
+        // on top, never a point. How tall a heap stands comes from a broad
+        // noise of its own, so some tower and some stay low. g keeps how far
+        // into the cloud this is, so stretched cloud can stay sheer
+        float x = max(0.0, d * (0.5 + 1.0 * n) - 0.1);
+        float s = clamp(x / 0.45, 0.0, 1.0);
+        float tower = 1.2 + 1.7 * texture2D(uNoise, vUv * 4.0 + drift * 0.5).b;
+        gl_FragColor = vec4(tower * sqrt(s * (2.0 - s)) / 3.0, s, 0.0, 1.0);
       }`,
   });
 
-  // ---- the volume: rays marched down through the shape ----
-  // One sheet over the top of the cloud layer; each pixel follows its view ray
-  // down through the layer in a fixed number of steps (offset a little per
-  // pixel, so the steps blur into a volume), gathering light where the ray is
-  // inside a cloud, until the cloud is opaque or the ray reaches the base.
+  // ---- the sky behind: gradient, sun, moon, stars ----
+  const trueSun = new THREE.Vector3(), moon = new THREE.Vector3();
+  const skyMat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({ uTrueSun: { value: trueSun }, uMoon: { value: moon }, uNoise: { value: noiseTex }, uTime: { value: 0 } }, lightUniforms),
+    side: THREE.BackSide, depthWrite: false, depthTest: false,
+    vertexShader: `
+      varying vec3 vDir;
+      void main() { vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `
+      uniform vec3 uTrueSun, uMoon, uSunCol, uFogCol; uniform float uTime;
+      uniform sampler2D uNoise;
+      varying vec3 vDir;
+      ${TONEMAP}
+      float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+      vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
+      float stars(vec3 d, float cells, float keep) {
+        vec2 g = vec2(atan(d.z, d.x), asin(clamp(d.y, -1.0, 1.0))) * cells / 3.14159;
+        vec2 c = floor(g), f = fract(g) - 0.5;
+        float h = hash12(c);
+        if (h < keep) return 0.0;
+        float r = length(f - (hash22(c + 4.1) - 0.5) * 0.6);
+        float twinkle = 0.65 + 0.35 * sin(uTime * (1.5 + 4.0 * h) + h * 40.0);
+        return smoothstep(0.1, 0.0, r) * (h - keep) / (1.0 - keep) * twinkle;
+      }
+      void main() {
+        vec3 d = normalize(vDir);
+        float day = smoothstep(-0.12, 0.22, uTrueSun.y);
+        vec3 zen = mix(vec3(0.010, 0.016, 0.040), vec3(0.16, 0.34, 0.72), day);
+        vec3 sky = mix(uFogCol, zen, pow(clamp(d.y, 0.0, 1.0), 0.55));
+        // below the horizon, the land: dark under a band of haze
+        vec3 land = uFogCol * 0.3 + vec3(0.02, 0.03, 0.015);
+        sky = mix(sky, land, smoothstep(0.0, -0.06, d.y));
+        // the sun: a glow round it, wide and warm when it is low, and its disc
+        float cs = dot(d, uTrueSun);
+        float above = smoothstep(-0.02, 0.01, d.y);
+        sky += uSunCol * (pow(max(cs, 0.0), 8.0) * 0.3 + pow(max(cs, 0.0), 90.0) * 0.8) * (1.2 - 0.6 * day) * above;
+        sky += vec3(1.0, 0.92, 0.78) * 7.0 * smoothstep(0.99955, 0.9997, cs) * above;
+        // the moon: a mottled disc and a faint halo, brightest at night
+        float night = 1.0 - day;
+        float cm = dot(d, uMoon);
+        float disc = smoothstep(0.99935, 0.9995, cm) * above;
+        vec3 mside = d - uMoon * cm;
+        float mare = texture2D(uNoise, mside.xy * 18.0 + mside.z * 9.0 + 0.3).g;
+        vec3 moonCol = vec3(0.92, 0.92, 0.86) * (0.7 + 0.5 * smoothstep(0.4, 0.6, mare)) * (0.35 + 1.4 * night);
+        sky = mix(sky, moonCol, disc * (0.45 + 0.55 * night));
+        sky += vec3(0.6, 0.65, 0.8) * pow(max(cm, 0.0), 300.0) * 0.25 * night * above;
+        // the stars, coming out as the sun goes down
+        float st = stars(d, 70.0, 0.965) * 1.6 + stars(d, 160.0, 0.975) * 0.7;
+        sky += vec3(0.9, 0.93, 1.0) * st * smoothstep(0.35, 0.95, night) * smoothstep(-0.02, 0.12, d.y) * (1.0 - disc);
+        gl_FragColor = vec4(pow(tonemap(sky), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 48, 24), skyMat);
+  sky.renderOrder = -10;
+  sky.frustumCulled = false;
+  group.add(sky);
+
+  // ---- the volume: rays marched up through the shape ----
+  // One sheet under the cloud base; each pixel follows its view ray up through
+  // the layer in a fixed number of steps (offset a little per pixel, so the
+  // steps blur into a volume), gathering light where the ray is inside a cloud,
+  // until the cloud is opaque or the ray leaves the top.
   const offset = new THREE.Vector2();
   const marchUniforms = Object.assign({
     uShapeTex: { value: shapeRT.texture }, uOffset: { value: offset }, uSize: { value: SIZE },
     uRipple: { value: rippleRT.texture }, uRippleRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
-    uMusic: { value: new THREE.Vector3() },
+    uMusic: { value: new THREE.Vector3() }, uTrueSun: { value: trueSun },
   }, lightUniforms);
   const marchMat = new THREE.ShaderMaterial({
     uniforms: marchUniforms,
-    transparent: true, depthWrite: false,
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
     vertexShader: `
       varying vec3 vWorld;
       void main() { vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
     fragmentShader: `
       uniform sampler2D uShapeTex, uRipple; uniform vec2 uOffset; uniform float uSize;
-      uniform vec3 uRippleRect, uMusic;
+      uniform vec3 uRippleRect, uMusic, uTrueSun;
       uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
       varying vec3 vWorld;
       ${TONEMAP}
       void main() {
         vec3 rd = normalize(vWorld - cameraPosition);
+        if (rd.y < 0.02) discard;
         vec2 toward = uSunDir.xz / max(length(uSunDir.xz), 1e-3);
         float rise = uSunDir.y / max(length(uSunDir.xz), 0.05);
-        if (rd.y > -0.02) discard;
-        float t0 = max((${TOP.toFixed(2)} - cameraPosition.y) / rd.y, 0.0);
-        float t1 = -cameraPosition.y / rd.y;
+        float t0 = max(-cameraPosition.y / rd.y, 0.0);
+        float t1 = (${TOP.toFixed(2)} - cameraPosition.y) / rd.y;
         float dt = (t1 - t0) / ${MARCH_STEPS}.0;
-        float jitter = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+        // interleaved gradient noise: each pixel starts its steps a little
+        // further along, in a fine even pattern rather than clumpy grain
+        float jitter = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
+        // light scattered forward: a cloud's edges blaze when you look toward the sun
+        float silver = 1.0 + 2.5 * pow(max(dot(rd, uSunDir), 0.0), 6.0);
         vec3 col = vec3(0.0);
         float trans = 1.0, hitT = t1;
         for (int i = 0; i < ${MARCH_STEPS}; i++) {
           float t = t0 + (float(i) + jitter) * dt;
           vec3 p = cameraPosition + rd * t;
-          vec4 s = texture2D(uShapeTex, (p.xz - uOffset) / uSize);
-          float h = s.r * 3.0;
+          vec4 sh = texture2D(uShapeTex, (p.xz - uOffset) / uSize);
+          float h = sh.r * 3.0;
           float inside = h - p.y;
           if (inside > 0.0) {
             // a thick cloud fills up within a metre; a thin one stays sheer
-            float a = 1.0 - exp(-2.4 * dt * smoothstep(0.0, 0.5, inside) * min(1.0, h / 0.6 + 0.25));
-            float top = clamp(p.y / max(h, 0.01), 0.0, 1.0);
-            // one step toward the sun: how much cloud stands between this point
-            // and the light. Sunlit tops go white, the far sides and the bases
-            // fall into the sky's blue
-            float hs = texture2D(uShapeTex, (p.xz + toward * 0.7 - uOffset) / uSize).r * 3.0;
-            float sunVis = exp(-2.2 * max(0.0, hs - (p.y + 0.7 * rise))) * mix(0.55, 1.0, s.g);
-            vec3 lit = uSunCol * (0.05 + 1.35 * sunVis) + uAmbient * (0.4 + 0.45 * top);
-            lit *= mix(0.6, 1.0, top) * mix(0.65, 1.0, s.b);
+            float a = 1.0 - exp(-2.4 * dt * smoothstep(0.0, 0.5, inside) * (0.2 + 0.8 * sh.g));
+            // how much cloud lies between here and the sun: straight up to the
+            // top, slanted by the sun's height, and one look toward it for the
+            // cloud beside
+            float hs = texture2D(uShapeTex, (p.xz + toward * 0.8 - uOffset) / uSize).r * 3.0;
+            float thick = inside / max(uSunDir.y, 0.3) + max(0.0, hs - (p.y + 0.8 * rise));
+            float sunVis = exp(-0.9 * thick);
+            float up = clamp(p.y / max(h, 0.01), 0.0, 1.0);
+            vec3 lit = uSunCol * sunVis * silver * 1.1 + uAmbient * (0.3 + 0.5 * up) + uSunCol * 0.04;
             if (trans > 0.99) hitT = t;
             col += trans * a * lit;
             trans *= 1.0 - a;
             if (trans < 0.02) break;
           }
         }
+        // the farthest clouds, too far to march finely, fade into the horizon's haze
+        trans = mix(trans, 1.0, smoothstep(90.0, 200.0, t0));
         if (trans > 0.995) discard;
         float alpha = 1.0 - trans;
         col /= alpha;
         vec3 hit = cameraPosition + rd * hitT;
         vec3 ring = texture2D(uRipple, (hit.xz - uRippleRect.xy) / uRippleRect.z).rgb;
         col += ring * (0.5 + 0.4 * uMusic.z);
-        float fog = 1.0 - exp(-uFogDensity * 0.5 * hitT);
+        // far clouds fade into the haze at the horizon
+        float fog = 1.0 - exp(-uFogDensity * 0.6 * hitT);
         gl_FragColor = vec4(pow(tonemap(mix(col, uFogCol, fog)), vec3(1.0 / 2.2)), alpha);
       }`,
   });
-  const sheet = new THREE.Mesh(new THREE.PlaneGeometry(240, 240), marchMat);
+  const sheet = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), marchMat);
   sheet.rotation.x = -Math.PI / 2;
-  sheet.position.y = TOP;
+  sheet.position.y = 0;
   sheet.renderOrder = 10;
   group.add(sheet);
-
-  // ---- the land far below, seen through the holes, under the clouds' shadows ----
-  const groundMat = new THREE.ShaderMaterial({
-    uniforms: Object.assign({ uNoise: { value: noiseTex }, uShapeTex: { value: shapeRT.texture }, uOffset: { value: offset }, uSize: { value: SIZE } }, lightUniforms),
-    vertexShader: `
-      varying vec3 vWorld;
-      void main() { vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
-    fragmentShader: `
-      uniform sampler2D uNoise, uShapeTex; uniform vec2 uOffset; uniform float uSize;
-      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
-      varying vec3 vWorld;
-      ${TONEMAP}
-      void main() {
-        vec2 xz = vWorld.xz;
-        float land = texture2D(uNoise, xz / 260.0).g + (texture2D(uNoise, xz / 70.0).b - 0.5) * 0.25;
-        float shore = smoothstep(0.47, 0.5, land);
-        vec3 sea = mix(vec3(0.06, 0.18, 0.30), vec3(0.08, 0.24, 0.34), texture2D(uNoise, xz / 90.0).r * 0.5);
-        float fields = texture2D(uNoise, xz / 22.0).b;
-        vec3 earth = mix(vec3(0.20, 0.32, 0.12), vec3(0.42, 0.40, 0.20), fields);
-        earth = mix(earth, vec3(0.14, 0.24, 0.10), smoothstep(0.55, 0.65, texture2D(uNoise, xz / 40.0).g));
-        vec3 col = mix(sea, earth, shore);
-        col = mix(col, vec3(0.62, 0.6, 0.5), 0.5 * smoothstep(0.47, 0.475, land) * (1.0 - smoothstep(0.477, 0.485, land)));
-        // the clouds' shadows: follow the sun up to the cloud layer
-        vec2 up = xz + uSunDir.xz / max(uSunDir.y, 0.15) * (${-GROUND}.0 + 1.0);
-        float cloud = texture2D(uShapeTex, (up - uOffset) / uSize).r * 3.0;
-        float lightHere = 1.0 - 0.6 * smoothstep(0.1, 0.8, cloud);
-        vec3 lit = col * (uAmbient * 0.7 + uSunCol * max(uSunDir.y, 0.0) * 0.9 * lightHere);
-        float fog = 1.0 - exp(-uFogDensity * 2.4 * length(vWorld - cameraPosition));
-        gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
-      }`,
-  });
-  const ground = new THREE.Mesh(new THREE.PlaneGeometry(600, 600), groundMat);
-  ground.rotation.x = -Math.PI / 2;
-  ground.position.y = GROUND;
-  ground.renderOrder = 0;
-  group.add(ground);
 
   // ---- looking under a finger: is it on a cloud? ----
   const probe = new Uint8Array(4);
@@ -3018,7 +3037,12 @@ const cloudScene = (() => {
     offset.x = (offset.x + WIND.x * DRIFT * dt) % SIZE;
     offset.y = (offset.y + WIND.y * DRIFT * dt) % SIZE;
     marchUniforms.uMusic.value.copy(music);
-    const viewScale = clamp(camera.position.y / 11, 0.6, 1.6);
+    // the sky follows the clock: the sun where the hour puts it, the moon across from it
+    trueSun.copy(sunDirection(hour));
+    moon.copy(sunDirection((hour + 12) % 24)).add(new THREE.Vector3(0.15, 0.05, 0.1)).normalize();
+    skyMat.uniforms.uTime.value = time;
+    sky.position.copy(camera.position);
+    const viewScale = viewScaleNow();
     const frames = dt * 60;
     mistTime += dt;
     const mist = mistTime > 0.08;
@@ -3028,7 +3052,7 @@ const cloudScene = (() => {
       if (!f.cloudMode) f.cloudMode = "sky";
       if (f.cloudMode === "sky") {
         edit(t.px, t.pz, t.x, t.z, 0.75 * viewScale * (1 + 0.5 * t.depth), 0, (0.07 + 0.05 * t.depth) * frames);
-        if (mist && moved > 0.01) burst({ x: t.x, y: 1.2, z: t.z }, MIST, 0.15, "pollen", 2);
+        if (mist && moved > 0.01) burst({ x: t.x, y: 0, z: t.z }, MIST, 0.15, "pollen", 2);
       } else if (moved > 0.004) {
         // pulling the cloud along; the faster the pull, the thinner it goes
         const R = 1.2 * viewScale * (1 + 0.4 * t.depth);
@@ -3072,8 +3096,9 @@ const cloudScene = (() => {
 
   return {
     id: "clouds", name: "Moln", group,
+    views: VIEWS_BELOW,
     sound: { voice: 6, ring: 6, wet: 0.5 },
-    touchHeight: 1.2, glowHeight: 1.6,
+    touchHeight: 0.0, glowHeight: -0.1,
     resize() {},
     update,
     tune() {},
@@ -3100,7 +3125,336 @@ const cloudScene = (() => {
 })();
 
 
-const SCENES = [meadowScene, waterScene, sandScene, cloudScene];
+// ---- scene: bubbles ---------------------------------------------------------------
+// Soap bubbles over a garden seen out of focus. A finger drawn across empty air
+// lets bubbles go along its path, big when it moves slowly and small when it
+// hurries; a finger held still blows one up under it until it lets go. Bubbles
+// that meet stick together into foam and drift as a clump. A poke pops a bubble
+// in a spray of droplets, and a finger dragged on from there herds the rest.
+// Every plucked string makes the bubbles near it shiver, and the strings'
+// rings run colour through their films. Three fingers pop them all.
+//
+// Each bubble is a sphere in one instanced mesh; its colour is thin-film
+// interference: the film's thickness swirls over the surface and drains toward
+// the bottom, the path through it grows as the view grazes, and red, green and
+// blue fall in and out of step at different thicknesses. Mostly clear facing
+// you, mostly reflection at the rim. The garden behind is never sharp: soft
+// fields of colour and lens bokeh, all of it low frequency.
+const bubbleScene = (() => {
+  const group = new THREE.Group();
+  const MAX = 160, LEVEL = 1.0, REACH = 9;   // how many, the height they float at, how far they may stray
+  const TONEMAP = "vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }";
+
+  // ---- the bubbles' state ----
+  const px = new Float32Array(MAX), py = new Float32Array(MAX), pz = new Float32Array(MAX);
+  const vx = new Float32Array(MAX), vz = new Float32Array(MAX);
+  const rad = new Float32Array(MAX), grow = new Float32Array(MAX);      // radius, and the radius it is growing toward
+  const age = new Float32Array(MAX), life = new Float32Array(MAX), phase = new Float32Array(MAX);
+  const alive = new Uint8Array(MAX), held = new Uint8Array(MAX);
+  const pop = new Float32Array(MAX);                                    // > 0 while popping: seconds left
+  const wobble = new Float32Array(MAX);
+
+  // ---- the mesh ----
+  const geo = new THREE.SphereGeometry(1, 40, 20);
+  const aFilm = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 2), 2);   // thickness offset, swirl seed
+  const aState = new THREE.InstancedBufferAttribute(new Float32Array(MAX * 3), 3);  // fade, wobble, wobble phase
+  geo.setAttribute("aFilm", aFilm);
+  geo.setAttribute("aState", aState);
+  const mat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({
+      uNoise: { value: noiseTex }, uTime: { value: 0 },
+      uRipple: { value: rippleRT.texture }, uRippleRect: { value: new THREE.Vector3(-BEND_SIZE / 2, -BEND_SIZE / 2, BEND_SIZE) },
+    }, lightUniforms),
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    vertexShader: `
+      attribute vec2 aFilm; attribute vec3 aState;
+      uniform float uTime;
+      varying vec3 vWorld, vNormal, vLocal; varying vec2 vFilm; varying float vFade;
+      void main() {
+        vec3 p = position;
+        // a shiver: the surface rings in a few lobes, dying away
+        float lobes = sin(p.x * 3.0 + uTime * 11.0 + aState.z) * sin(p.y * 2.0 - uTime * 9.0) + sin(p.z * 4.0 + uTime * 13.0);
+        p *= 1.0 + aState.y * 0.06 * lobes;
+        vec4 w = modelMatrix * instanceMatrix * vec4(p, 1.0);
+        vWorld = w.xyz;
+        vNormal = normalize(mat3(modelMatrix) * mat3(instanceMatrix) * normal);
+        vLocal = position;
+        vFilm = aFilm; vFade = aState.x;
+        gl_Position = projectionMatrix * viewMatrix * w;
+      }`,
+    fragmentShader: `
+      uniform sampler2D uNoise, uRipple; uniform float uTime; uniform vec3 uRippleRect;
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol;
+      varying vec3 vWorld, vNormal, vLocal; varying vec2 vFilm; varying float vFade;
+      ${TONEMAP}
+      void main() {
+        vec3 n = normalize(vNormal);
+        if (!gl_FrontFacing) n = -n;
+        vec3 V = normalize(cameraPosition - vWorld);
+        float c = abs(dot(n, V));
+        // the film: swirling, thinner at the top where it drains
+        vec2 sw = vLocal.xz * 0.6 + vec2(vLocal.y * 0.3, 0.0) + vFilm.y + vec2(uTime * 0.013, -uTime * 0.009);
+        float swirl = texture2D(uNoise, sw * 0.5).g * 0.75 + texture2D(uNoise, sw * 1.3 + 0.4).a * 0.25;
+        float thick = 0.4 + 2.2 * swirl - 0.35 * vLocal.y + vFilm.x;
+        float path = thick * (0.55 + 0.45 * c) * 2.2;
+        vec3 film = 0.5 + 0.5 * cos(6.2831 * (path + vec3(0.0, 0.33, 0.67)));
+        vec3 ring = texture2D(uRipple, (vWorld.xz - uRippleRect.xy) / uRippleRect.z).rgb;
+        film = mix(film, film * 0.4 + ring * 1.6, clamp(length(ring) * 1.5, 0.0, 0.8));
+        float fres = 0.05 + 0.95 * pow(1.0 - c, 3.5);
+        // what it reflects: a bright sky above, the dim garden below, and the sun
+        vec3 R = reflect(-V, n);
+        vec3 env = mix(uFogCol * 0.35 + uAmbient * 0.2, uFogCol * 1.1 + uSunCol * 0.25, smoothstep(-0.2, 0.6, R.y));
+        float spec = pow(max(dot(R, uSunDir), 0.0), 160.0) * 4.0 + pow(max(dot(R, uSunDir), 0.0), 12.0) * 0.25;
+        vec3 col = film * env * 1.4 + uSunCol * spec;
+        float alpha = clamp(fres * 0.8 + 0.05 + spec * 0.6, 0.0, 1.0) * vFade;
+        gl_FragColor = vec4(pow(tonemap(col), vec3(1.0 / 2.2)), alpha);
+      }`,
+  });
+  const mesh = new THREE.InstancedMesh(geo, mat, MAX);
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mesh.frustumCulled = false;
+  mesh.renderOrder = 10;
+  group.add(mesh);
+
+  // ---- the garden behind, out of focus ----
+  const gardenMat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({ uNoise: { value: noiseTex }, uTime: { value: 0 } }, lightUniforms),
+    vertexShader: `
+      varying vec3 vWorld;
+      void main() { vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+    fragmentShader: `
+      uniform sampler2D uNoise; uniform float uTime;
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol;
+      varying vec3 vWorld;
+      ${TONEMAP}
+      float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+      vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
+      // lens bokeh: soft discs with a slightly brighter rim, one in some cells
+      vec3 bokeh(vec2 xz, float cell, float keep, vec3 tint) {
+        vec2 g = xz / cell, c = floor(g), f = fract(g);
+        vec3 sum = vec3(0.0);
+        for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
+          vec2 k = c + vec2(float(i), float(j));
+          float h = hash12(k);
+          if (h < keep) continue;
+          vec2 centre = vec2(float(i), float(j)) + hash22(k + 2.7);
+          float r = 0.35 + 0.5 * hash12(k + 9.1);
+          float d = length(f - centre) / r;
+          float disc = smoothstep(1.0, 0.85, d) * (0.7 + 0.3 * smoothstep(0.5, 0.95, d));
+          vec3 hue = mix(tint, vec3(1.0, 0.95, 0.85), hash12(k + 5.3));
+          sum += hue * disc * (h - keep) / (1.0 - keep);
+        }
+        return sum;
+      }
+      void main() {
+        vec2 xz = vWorld.xz + vec2(uTime * 0.05, uTime * 0.03);
+        // soft fields of colour: leaves, a lawn, a flower bed, all melted together
+        float n1 = texture2D(uNoise, xz / 55.0).g, n2 = texture2D(uNoise, xz / 38.0 + 0.3).r, n3 = texture2D(uNoise, xz / 80.0).a;
+        vec3 leaves = mix(vec3(0.07, 0.16, 0.10), vec3(0.20, 0.36, 0.16), smoothstep(0.35, 0.65, n1));
+        vec3 bloom = mix(vec3(0.55, 0.42, 0.20), vec3(0.42, 0.26, 0.40), smoothstep(0.25, 0.45, n2));
+        vec3 col = mix(leaves, bloom, smoothstep(0.52, 0.66, n3) * 0.7);
+        col *= uAmbient * 0.7 + uSunCol * 0.4 * max(uSunDir.y, 0.0);
+        // bokeh: the sun glinting through leaves by day, lights at night
+        float night = 1.0 - smoothstep(0.0, 0.25, uSunDir.y + 0.1);
+        vec3 b = bokeh(xz, 4.5, 0.86, vec3(0.9, 0.95, 0.6)) + bokeh(xz + 11.0, 2.6, 0.9, vec3(0.6, 0.9, 1.0)) * 0.6;
+        col += b * (uSunCol * 0.12 + vec3(1.0, 0.75, 0.45) * 0.3 * night);
+        float fade = 1.0 - exp(-0.004 * length(vWorld - cameraPosition));
+        gl_FragColor = vec4(pow(tonemap(mix(col, uFogCol * 0.6, fade)), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+  const garden = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), gardenMat);
+  garden.rotation.x = -Math.PI / 2;
+  garden.position.y = -6;
+  group.add(garden);
+
+  // ---- making and popping ----
+  function spawn(x, z, r, isHeld = false) {
+    let k = -1;
+    for (let i = 0; i < MAX; i++) if (!alive[i]) { k = i; break; }
+    if (k < 0) {
+      // full: the oldest that is not being blown goes
+      let oldest = -1;
+      for (let i = 0; i < MAX; i++) if (!held[i] && pop[i] <= 0 && (oldest < 0 || age[i] > age[oldest])) oldest = i;
+      if (oldest < 0) return -1;
+      popNow(oldest);
+      return -1;
+    }
+    alive[k] = 1; held[k] = isHeld ? 1 : 0; pop[k] = 0;
+    px[k] = x; pz[k] = z; py[k] = LEVEL;
+    vx[k] = (Math.random() - 0.5) * 0.2; vz[k] = (Math.random() - 0.5) * 0.2;
+    rad[k] = Math.min(r, 0.12); grow[k] = r;
+    age[k] = 0; life[k] = 45 + Math.random() * 75; phase[k] = Math.random() * 6.28;
+    wobble[k] = 0.6;
+    aFilm.setXY(k, Math.random() * 0.8, Math.random() * 10);
+    return k;
+  }
+  const filmRgb = (k) => {
+    const t = aFilm.getX(k) * 2.2 + 1.3;
+    return [0.5 + 0.5 * Math.cos(6.2831 * t), 0.5 + 0.5 * Math.cos(6.2831 * (t + 0.33)), 0.5 + 0.5 * Math.cos(6.2831 * (t + 0.67))];
+  };
+  function popNow(k) {
+    if (!alive[k] || pop[k] > 0) return;
+    pop[k] = 0.09; held[k] = 0;
+    const r = rad[k];
+    burst({ x: px[k], y: py[k] - r * 0.3, z: pz[k] }, filmRgb(k), 0.3 + 0.4 * r, "splash", 8 + Math.round(14 * r));
+    // the neighbours feel it
+    for (let i = 0; i < MAX; i++) {
+      if (!alive[i] || i === k) continue;
+      const d = Math.hypot(px[i] - px[k], pz[i] - pz[k]);
+      if (d < (rad[i] + r) * 1.6) wobble[i] = Math.max(wobble[i], 0.8);
+    }
+  }
+  function bubbleAt(x, z) {
+    let best = -1, bestD = 1e9;
+    for (let i = 0; i < MAX; i++) {
+      if (!alive[i] || pop[i] > 0) continue;
+      const d = Math.hypot(px[i] - x, pz[i] - z) / rad[i];
+      if (d < 1.05 && d < bestD) { best = i; bestD = d; }
+    }
+    return best;
+  }
+
+  // ---- the frame ----------------------------------------------------------------
+  const m4 = new THREE.Matrix4(), q = new THREE.Quaternion(), sc = new THREE.Vector3(), pos = new THREE.Vector3();
+  let popAll = 0;
+  function update(dt, touches, time) {
+    mat.uniforms.uTime.value = time;
+    gardenMat.uniforms.uTime.value = time;
+    const viewScale = viewScaleNow();
+
+    // fingers: painting, blowing, herding
+    for (const t of touches) {
+      const f = t.finger;
+      if (!f.bubbleMode) f.bubbleMode = "paint";
+      const mx = t.x - t.px, mz = t.z - t.pz, moved = Math.hypot(mx, mz);
+      if (f.bubbleMode === "herd") {
+        for (let i = 0; i < MAX; i++) {
+          if (!alive[i]) continue;
+          const d = Math.hypot(px[i] - t.x, pz[i] - t.z);
+          const w = Math.exp(-(d * d) / (1.2 * 1.2 * viewScale * viewScale));
+          if (w > 0.01 && dt > 0) { vx[i] += (mx / dt - vx[i]) * w * 0.25; vz[i] += (mz / dt - vz[i]) * w * 0.25; }
+        }
+        continue;
+      }
+      const blowing = f.blowing != null && alive[f.blowing] && held[f.blowing] ? f.blowing : -1;
+      if (moved > 0.01) {
+        // painting: let the one being blown go, and leave bubbles along the way,
+        // big for a slow finger and small for a quick one
+        if (blowing >= 0) { held[blowing] = 0; f.blowing = null; }
+        const speed = moved / Math.max(dt, 1e-3);
+        const r = clamp(1.0 / (1 + speed * 0.25), 0.15, 0.9) * viewScale * (0.8 + 0.5 * t.depth);
+        f.paintLeft = (f.paintLeft || 0) - moved;
+        while (f.paintLeft <= 0) {
+          const a = Math.random();
+          spawn(t.px + mx * a + (Math.random() - 0.5) * r, t.pz + mz * a + (Math.random() - 0.5) * r, r * (0.6 + 0.8 * Math.random()));
+          f.paintLeft += r * 1.7;
+        }
+      } else if (t.speed < 0.3) {
+        // held still: blow one up under the finger, up to about a metre across... and more
+        if (blowing < 0) {
+          f.holdTime = (f.holdTime || 0) + dt;
+          if (f.holdTime > 0.25) { f.blowing = spawn(t.x, t.z, 0.15, true); f.holdTime = 0; }
+        } else {
+          grow[blowing] = Math.min(1.4 * viewScale, grow[blowing] + dt * 0.35);
+          px[blowing] = t.x; pz[blowing] = t.z; vx[blowing] = 0; vz[blowing] = 0;
+        }
+      }
+    }
+
+    // the air: a slow drift, swirling a little, and a pull back toward the view
+    const cx = currentLook.x, cz = currentLook.z;
+    for (let i = 0; i < MAX; i++) {
+      if (!alive[i]) continue;
+      age[i] += dt;
+      if (pop[i] > 0) {
+        pop[i] -= dt;
+        if (pop[i] <= 0) { alive[i] = 0; held[i] = 0; }
+        continue;
+      }
+      if (age[i] > life[i] && !held[i]) { popNow(i); continue; }
+      rad[i] += (grow[i] - rad[i]) * (1 - Math.exp(-dt / 0.25));
+      if (held[i]) continue;
+      const sw = time * 0.05;
+      vx[i] += (0.12 * Math.sin(pz[i] * 0.35 + sw) + 0.05) * dt;
+      vz[i] += (0.12 * Math.cos(px[i] * 0.3 - sw * 1.3) + 0.03) * dt;
+      const ox = px[i] - cx, oz = pz[i] - cz, od = Math.hypot(ox, oz);
+      if (od > REACH * viewScale) { vx[i] -= ox / od * (od - REACH * viewScale) * 0.6 * dt; vz[i] -= oz / od * (od - REACH * viewScale) * 0.6 * dt; }
+    }
+    // foam: bubbles that touch press into each other a little and stay; those
+    // nearly touching are drawn together
+    for (let i = 0; i < MAX; i++) {
+      if (!alive[i] || pop[i] > 0) continue;
+      for (let j = i + 1; j < MAX; j++) {
+        if (!alive[j] || pop[j] > 0) continue;
+        const dx = px[j] - px[i], dz = pz[j] - pz[i];
+        const d = Math.hypot(dx, dz) || 1e-4, rest = (rad[i] + rad[j]) * 0.9;
+        if (d > rest * 1.6) continue;
+        const pull = d < rest ? (d - rest) * 4.0 : (d - rest) * 0.6;   // push apart when pressed, gently together when near
+        const ux = dx / d * pull * dt, uz = dz / d * pull * dt;
+        const wi = held[i] ? 0 : rad[j] / (rad[i] + rad[j]), wj = held[j] ? 0 : rad[i] / (rad[i] + rad[j]);
+        vx[i] += ux * wi; vz[i] += uz * wi; vx[j] -= ux * wj; vz[j] -= uz * wj;
+      }
+    }
+    // move, and set every instance
+    const drag = Math.exp(-dt / 1.6);
+    for (let i = 0; i < MAX; i++) {
+      if (!alive[i]) { m4.makeScale(0, 0, 0); mesh.setMatrixAt(i, m4); aState.setX(i, 0); continue; }
+      if (!held[i]) {
+        vx[i] *= drag; vz[i] *= drag;
+        px[i] += vx[i] * dt; pz[i] += vz[i] * dt;
+      }
+      py[i] = LEVEL + 0.12 * Math.sin(time * 0.6 + phase[i]) + rad[i] * 0.3;
+      wobble[i] *= Math.exp(-dt / 0.5);
+      const popping = pop[i] > 0 ? pop[i] / 0.09 : 1;
+      const s = rad[i] * (pop[i] > 0 ? 1 + (1 - popping) * 0.25 : 1);
+      pos.set(px[i], py[i], pz[i]); sc.set(s, s, s);
+      m4.compose(pos, q, sc);
+      mesh.setMatrixAt(i, m4);
+      aState.setXYZ(i, Math.min(1, age[i] / 0.15) * popping, wobble[i], phase[i]);
+    }
+    mesh.instanceMatrix.needsUpdate = true;
+    aState.needsUpdate = true;
+    aFilm.needsUpdate = true;
+
+    // three fingers: they all go, one after another, over about a second
+    if (popAll > 0) {
+      popAll -= dt;
+      for (let i = 0; i < MAX; i++) if (alive[i] && pop[i] <= 0 && Math.random() < dt * 4) popNow(i);
+    }
+  }
+
+  return {
+    id: "bubbles", name: "Bubblor", group,
+    sound: { voice: 1, ring: 4.5, wet: 0.55 },
+    touchHeight: LEVEL, glowHeight: LEVEL,
+    resize() {},
+    update,
+    tune() {},
+    enter() {},
+    exit() {},
+    // a poke on a bubble pops it, and the finger herds the rest from there;
+    // anywhere else it paints
+    tap(f) {
+      const k = bubbleAt(f.world.x, f.world.z);
+      f.blowing = null; f.paintLeft = 0; f.holdTime = 0;
+      if (k >= 0) { popNow(k); f.bubbleMode = "herd"; } else f.bubbleMode = "paint";
+    },
+    // a plucked string makes the bubbles near the finger shiver
+    pluck(f, col, vel) {
+      for (let i = 0; i < MAX; i++) {
+        if (!alive[i]) continue;
+        const d = Math.hypot(px[i] - f.world.x, pz[i] - f.world.z);
+        if (d < 3.5) wobble[i] = Math.max(wobble[i], vel * (1 - d / 3.5) * 1.2);
+      }
+    },
+    erase() { popAll = 1.2; },
+    stats() { let n = 0; for (let i = 0; i < MAX; i++) n += alive[i]; return { bubbles: n }; },
+    count() { let n = 0; for (let i = 0; i < MAX; i++) n += alive[i]; return n; },
+  };
+})();
+
+
+const SCENES = [meadowScene, waterScene, sandScene, cloudScene, bubbleScene];
 let activeScene = meadowScene;
 
 // Switch scene: its surface replaces the last one, fingers meet it at its
@@ -3108,12 +3462,14 @@ let activeScene = meadowScene;
 // changed in a scene is remembered for that scene.
 function setScene(id) {
   const next = SCENES.find((sc) => sc.id === id) || meadowScene;
+  const newViews = (next.views || VIEWS) !== viewsNow();
   if (activeScene !== next) { scene.remove(activeScene.group); activeScene.exit(); }
   activeScene = next;
   if (!next.group.parent) scene.add(next.group);
   next.enter();
   next.resize();
   plane.constant = -next.touchHeight;
+  if (newViews) goToView(viewIndex, !started);
   settings.scene = next.id;
   const snd = settings.sound[next.id] || next.sound;
   settings.voice = snd.voice;
@@ -3463,14 +3819,18 @@ function applyHour(h) {
 
 // ---- camera views ----------------------------------------------------------------
 let viewIndex = 0, glide = 1, from = null, to = null;
+function viewScaleNow() { return clamp(Math.abs(camera.position.y - activeScene.touchHeight) / 11, 0.6, 1.6); }
 function viewState(v) { return { pos: new THREE.Vector3(...v.pos), look: new THREE.Vector3(...v.look), fov: v.fov }; }
+// a scene may bring its own views (the clouds are seen from below)
+function viewsNow() { return (activeScene && activeScene.views) || VIEWS; }
 function goToView(i, instant) {
-  viewIndex = ((i % VIEWS.length) + VIEWS.length) % VIEWS.length;
-  from = to ? { pos: camera.position.clone(), look: to.look.clone(), fov: camera.fov } : viewState(VIEWS[viewIndex]);
-  to = viewState(VIEWS[viewIndex]);
+  const views = viewsNow();
+  viewIndex = ((i % views.length) + views.length) % views.length;
+  from = to ? { pos: camera.position.clone(), look: to.look.clone(), fov: camera.fov } : viewState(views[viewIndex]);
+  to = viewState(views[viewIndex]);
   if (from && to && glide < 1) from.look = currentLook.clone();
   glide = instant ? 1 : 0;
-  $("view").innerHTML = "<span class=\"pre\">Vy: </span>" + VIEWS[viewIndex].name;
+  $("view").innerHTML = "<span class=\"pre\">Vy: </span>" + views[viewIndex].name;
 }
 const currentLook = new THREE.Vector3();
 function placeCamera(dt, time) {
@@ -3518,7 +3878,7 @@ function frame(now) {
 
   // hand the fingers to the scene; each finger's glow sits on its surface
   const touches = [];
-  const viewScale = clamp(camera.position.y / 11, 0.6, 1.6);
+  const viewScale = viewScaleNow();
   for (const f of fingers.values()) {
     const sp = f.vel.length();
     const k = sp > 1e-3 ? clamp(sp / 3, 0, 1) / sp : 0;
