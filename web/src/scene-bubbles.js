@@ -471,6 +471,7 @@ const bubbleScene = (() => {
 
   return {
     id: "bubbles", name: "Bubblor", group,
+    chords: [[9, 0], [4, 0], [11, 0], [1, 1]],          // A E B C#m: IV I V vi, the lift that starts away from home
     sound: { voice: 1, ring: 4.5, wet: 0.55 },
     touchHeight: LEVEL, glowHeight: LEVEL,
     resize() {},

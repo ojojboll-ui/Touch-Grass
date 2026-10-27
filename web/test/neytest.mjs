@@ -28,7 +28,8 @@ for (const note of [57, 64, 72, 81]) {
   const cents = 1200 * Math.log2(P / bestLag);
   check(out.every(Number.isFinite), `MIDI ${note}: finite`);
   check(Math.abs(cents) < 25, `MIDI ${note}: in tune (${cents.toFixed(0)} cents, lag resolution ~${(1200 * Math.log2((P + 1) / P)).toFixed(0)})`);
-  check(best > 0.5 && best < 0.97, `MIDI ${note}: pitched but breathy (periodicity ${best.toFixed(2)})`);
+  // mostly tone, with breath you can still hear: about 15 to 25 dB of tone over noise
+  check(best > 0.97 && best < 0.997, `MIDI ${note}: mostly tone, a little breath (periodicity ${best.toFixed(3)}, ${(10 * Math.log10(best / (1 - best))).toFixed(0)} dB)`);
   let tail = 0; for (let i = Math.round(sr * 3.9); i < sr * 4; i++) tail = Math.max(tail, Math.abs(out[i]));
   check(tail < 1e-3, `MIDI ${note}: the breath ends (${tail.toExponential(1)})`);
 }

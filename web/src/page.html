@@ -212,18 +212,24 @@ body {
 // root 0..11 (C = 0), kind: 0 major, 1 minor, 2 seventh, 3 major seventh, 4 minor seventh
 const NOTE_NAMES = ["C", "C#", "D", "Eb", "E", "F", "F#", "G", "Ab", "A", "Bb", "B"];
 const KINDS = [["", "dur"], ["m", "moll"], ["7", "sjua"], ["maj7", "maj7"], ["m7", "moll 7"]];
-const DEFAULT_CHORDS = [[7, 0], [2, 0], [9, 0], [4, 1]];        // G, D, A, Em
+const DEFAULT_CHORDS = [[7, 0], [2, 0], [4, 1], [0, 0]];        // G, D, Em, C: a scene without its own
 const PALETTE = [[1.0, 0.78, 0.32], [1.0, 0.58, 0.45], [0.95, 0.5, 0.75], [0.62, 0.56, 1.0], [0.45, 0.75, 1.0], [0.55, 0.9, 0.6]];
 const MAX_PLATES = 6;
 const chordName = (r, q) => NOTE_NAMES[r] + KINDS[q][0];
 
 const settings = (() => {
   const clamp = (x, a, b) => Math.min(b, Math.max(a, x));   // the page's clamp is defined further down
-  const s = { scene: "meadow", sound: {}, chords: DEFAULT_CHORDS.map((c) => c.slice()), voice: 1, ring: 3.5, drone: true, droneLevel: 0.35, droneBright: 0.42 };
+  const s = { scene: "meadow", sound: {}, chords: DEFAULT_CHORDS.map((c) => c.slice()), chordsByScene: {}, voice: 1, ring: 3.5, drone: true, droneLevel: 0.35, droneBright: 0.42 };
   try {
     const saved = JSON.parse(localStorage.getItem("touchgrass.settings") || "null");
-    if (saved && Array.isArray(saved.chords) && saved.chords.length >= 1) {
-      s.chords = saved.chords.slice(0, MAX_PLATES).map(([r, q]) => [clamp(r | 0, 0, 11), clamp(q | 0, 0, 4)]);
+    // each scene keeps its own chords (the one list from before scenes had
+    // their own is let go: every scene starts from its own pop progression)
+    const chordList = (list) => list.slice(0, MAX_PLATES).map(([r, q]) => [clamp(r | 0, 0, 11), clamp(q | 0, 0, 4)]);
+    if (saved && saved.chordsByScene && typeof saved.chordsByScene === "object") {
+      for (const id in saved.chordsByScene) {
+        const list = saved.chordsByScene[id];
+        if (Array.isArray(list) && list.length >= 1) s.chordsByScene[id] = chordList(list);
+      }
     }
     if (saved && typeof saved.scene === "string") s.scene = saved.scene;
     if (saved && saved.sound && typeof saved.sound === "object") {
@@ -240,7 +246,17 @@ const settings = (() => {
   } catch (e) { /* no storage: the defaults */ }
   return s;
 })();
-function saveSettings() { try { localStorage.setItem("touchgrass.settings", JSON.stringify(settings)); } catch (e) {} }
+function saveSettings() {
+  // only chords that differ from the scene's own are kept, so a scene whose
+  // chords were never touched follows its progression if that changes
+  if (typeof activeScene !== "undefined" && activeScene) {
+    if (JSON.stringify(settings.chords) === JSON.stringify(sceneChords(activeScene))) delete settings.chordsByScene[activeScene.id];
+    else settings.chordsByScene[activeScene.id] = settings.chords.map((c) => c.slice());
+  }
+  try { localStorage.setItem("touchgrass.settings", JSON.stringify(settings)); } catch (e) {}
+}
+// the chords a scene starts with: its own, or the general ones
+const sceneChords = (sc) => (sc.chords || DEFAULT_CHORDS).map((c) => c.slice());
 
 let CHORDS = [], PLATE_COLORS = [], plates = [];
 const STRING_LEFT = 0.04, STRING_RIGHT = 0.96, REARM = 0.33, BAND_HYST = 0.18;
@@ -479,6 +495,10 @@ function setScene(id) {
   plane.constant = -next.touchHeight;
   if (newViews) goToView(viewIndex, !started);
   settings.scene = next.id;
+  // its chords: what was last played here, or the scene's own progression
+  settings.chords = (settings.chordsByScene[next.id] || sceneChords(next)).map((c) => c.slice());
+  applyChords();
+  if (document.getElementById("chord-list")) renderChordList();
   const snd = settings.sound[next.id] || next.sound;
   settings.voice = snd.voice;
   settings.ring = snd.ring;
@@ -1037,7 +1057,7 @@ $("chord-add").addEventListener("click", () => {
   saveSettings(); applyChords(); renderChordList(); previewPlate(settings.chords.length - 1);
 });
 $("chord-reset").addEventListener("click", () => {
-  settings.chords = DEFAULT_CHORDS.map((c) => c.slice());
+  settings.chords = sceneChords(activeScene);
   saveSettings(); applyChords(); renderChordList();
 });
 const VOICE_NAMES = ["Omni (OM-84)", "Harpa", "Vibrafon", "Gitarr", "Cello", "Ney", "Juno"];

@@ -777,6 +777,7 @@ const waterScene = (() => {
 
   return {
     id: "water", name: "Vatten", group,
+    chords: [[9, 1], [5, 0], [0, 0], [7, 0]],           // Am F C G: vi IV I V, the same four turned to start in minor
     sound: { voice: 2, ring: 6, wet: 0.48 },
     touchHeight: 0.0, glowHeight: 0.06,
     resize() { updateView(); updateArea(); },

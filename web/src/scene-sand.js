@@ -322,7 +322,7 @@ const sandScene = (() => {
   function update(dt, touches, time) {
     common.uTime.value = time;
     common.uMusic.value.copy(music);
-    const viewScale = clamp(camera.position.y / 11, 0.6, 1.6);
+    const viewScale = viewScaleNow();
     const wind = blow(dt);
     moveGrains(dt, wind);
 
@@ -403,6 +403,7 @@ const sandScene = (() => {
 
   return {
     id: "sand", name: "Sand", group,
+    chords: [[2, 0], [11, 1], [7, 0], [9, 0]],          // D Bm G A: I vi IV V, the fifties doo-wop turn
     sound: { voice: 5, ring: 5, wet: 0.42 },
     touchHeight: 0.0, glowHeight: 0.04,
     resize() {},

@@ -346,6 +346,7 @@ const cloudScene = (() => {
 
   return {
     id: "clouds", name: "Moln", group,
+    chords: [[5, 3], [0, 0], [2, 4], [10, 3]],          // Fmaj7 C Dm7 Bbmaj7: I V vi IV with sevenths, soft for brass
     views: VIEWS_BELOW,
     sound: { voice: 6, ring: 6, wet: 0.5 },
     touchHeight: 0.0, glowHeight: -0.1,

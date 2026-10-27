@@ -508,7 +508,7 @@ function TouchGrassEngine() {
       this.bp1.set(this.sr, this.hz, 9);
       this.bp2.set(this.sr, this.hz * 2, 7);
       this.amp = 0.5 + 0.5 * clamp(velocity, 0, 1);
-      this.breathy = 0.55 + 0.35 * (1 - clamp(bright, 0, 1));     // a soft touch is mostly breath
+      this.breathy = 0.62 + 0.2 * (1 - clamp(bright, 0, 1));       // a soft touch is a little breathier
       this.t = 0; this.hold = holdSeconds; this.env = this.env || 0;
       this.attack = 1 - Math.exp(-1 / (0.09 * this.sr));
       this.release = 1 - Math.exp(-1 / (0.32 * this.sr));
@@ -534,8 +534,13 @@ function TouchGrassEngine() {
       this.hissHp += 0.12 * (this.hissLp - this.hissHp);
       const hiss = this.hissLp - this.hissHp;
       const flutter = 1 + 0.06 * Math.sin(2 * PI * this.vibPhase * 0.7 + 1.3);   // the breath is never quite steady
-      const breath = (pitched * 0.55 + hiss * 0.35) * this.breathy;
-      return (tone * (1 - this.breathy * 0.6) * 0.5 + breath) * this.env * this.amp * flutter;
+      // the tone carries the note; the breath stays under it, except for the
+      // puff of air as each note is blown into, gone in a tenth of a second.
+      // The hiss is kept low: it sits where the ear is keenest, so a little
+      // of it sounds like a lot
+      const puff = 0.5 * Math.exp(-t / 0.1);
+      const breath = (pitched * 0.5 + hiss * 0.15) * (this.breathy + puff);
+      return (tone * 0.62 + breath) * this.env * this.amp * flutter;
     }
   }
 
@@ -559,7 +564,7 @@ function TouchGrassEngine() {
       this.cello = new CelloSection(sr, pluckVoices >= 48 ? 8 : 6);
       this.celloGain = 0.46;
       this.ney = new NeySection(sr, 10);
-      this.neyGain = 0.5;
+      this.neyGain = 0.4;
       this.juno = new JunoSection(sr, 12);
       this.junoGain = 1.7;
       this.plucks = Array.from({ length: pluckVoices }, () => new PluckVoice(sr));

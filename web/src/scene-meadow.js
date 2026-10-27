@@ -288,6 +288,7 @@ const meadowScene = (() => {
 
   return {
     id: "meadow", name: "Äng", group,
+    chords: [[7, 0], [2, 0], [4, 1], [0, 0]],           // G D Em C: I V vi IV, the classic
     sound: { voice: 1, ring: 3.5, wet: 0.32 },
     touchHeight: GRASS_TOP * 0.8, glowHeight: GRASS_TOP + 0.15,
     resize: buildField, update, tune,
