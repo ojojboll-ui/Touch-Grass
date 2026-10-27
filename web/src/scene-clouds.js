@@ -18,7 +18,13 @@
 // instead, so drifting costs nothing and blurs nothing.
 const cloudScene = (() => {
   const group = new THREE.Group();
-  const SIZE = 48, RES = 256, SHAPE_RES = 512;
+  // the field is a tile that repeats across the sky. It must be wide enough
+  // that a stroke painted far off toward the horizon does not turn up again in
+  // a nearer copy: with 144 m, the copy of a stroke up to about 108 m away
+  // falls behind the camera, and the one beyond it is lost in the haze. 144 is
+  // three times the 48 m the noise scales below were chosen for, so their
+  // multipliers are whole numbers and still wrap with it
+  const SIZE = 144, RES = 512, SHAPE_RES = 1024, PAINT_REACH = 0.75 * SIZE;
   const TOP = 3.6, MARCH_STEPS = 16;        // the cloud layer's depth, and the steps a ray takes through it
   const MAX_EDIT = 10;
   const WIND = new THREE.Vector2(0.8, 0.6), DRIFT = 0.22;   // metres a second
@@ -27,7 +33,7 @@ const cloudScene = (() => {
   const VIEWS_BELOW = [
     { name: "Rakt upp",  pos: [0.0, -11.0, 0.6], look: [0, 0, -1.0], fov: 55 },
     { name: "Snett upp", pos: [0.0, -11.0, 6.0], look: [0, 0, -6.0], fov: 58 },
-    { name: "Horisont",  pos: [0.0, -11.0, 10.0], look: [0, -4, -12], fov: 62 },
+    { name: "Horisont",  pos: [0.0, -11.0, 10.0], look: [0, -1, -12], fov: 62 },
   ];
 
   function wrapTarget(res, float) {
@@ -81,7 +87,7 @@ const cloudScene = (() => {
         float d = dens(vUv - disp / uSize) * thin;
         if (uInit > 0.5) {
           // the first sky: big soft heaps of cumulus over about a third of it
-          float a = texture2D(uNoise, vUv).a, b = texture2D(uNoise, vUv * 2.0).b;
+          float a = texture2D(uNoise, vUv * 3.0).a, b = texture2D(uNoise, vUv * 6.0).b;
           d = smoothstep(0.46, 0.6, a + 0.3 * (b - 0.5));
         }
         d *= 1.0 - uClear;
@@ -114,15 +120,15 @@ const cloudScene = (() => {
         // so it wraps with the field); mostly broad, little fine, so the tops
         // round over instead of standing in points
         vec2 drift = vec2(uTime * 0.0021, uTime * 0.0013);
-        float n = texture2D(uNoise, vUv * 3.0 + drift).b * 0.62 + texture2D(uNoise, vUv * 7.0 - drift * 1.7).b * 0.3
-                + texture2D(uNoise, vUv * 17.0 + drift * 2.3).b * 0.08;
+        float n = texture2D(uNoise, vUv * 9.0 + drift).b * 0.62 + texture2D(uNoise, vUv * 21.0 - drift * 1.7).b * 0.3
+                + texture2D(uNoise, vUv * 51.0 + drift * 2.3).b * 0.08;
         // each heap rounds over like a quarter circle: steep at its edge, flat
         // on top, never a point. How tall a heap stands comes from a broad
         // noise of its own, so some tower and some stay low. g keeps how far
         // into the cloud this is, so stretched cloud can stay sheer
         float x = max(0.0, d * (0.5 + 1.0 * n) - 0.1);
         float s = clamp(x / 0.45, 0.0, 1.0);
-        float tower = 1.2 + 1.7 * texture2D(uNoise, vUv * 4.0 + drift * 0.5).b;
+        float tower = 1.2 + 1.7 * texture2D(uNoise, vUv * 12.0 + drift * 0.5).b;
         gl_FragColor = vec4(tower * sqrt(s * (2.0 - s)) / 3.0, s, 0.0, 1.0);
       }`,
   });
@@ -277,6 +283,7 @@ const cloudScene = (() => {
   }
 
   // ---- the frame ----------------------------------------------------------------
+  const brushScale = (x, z) => clamp(Math.hypot(x - camera.position.x, camera.position.y, z - camera.position.z) / 14, 1, 5);
   const edits = [];
   function edit(ax, az, bx, bz, radius, kind, amount, push = 0) {
     if (edits.length < MAX_EDIT) edits.push([ax - offset.x, az - offset.y, bx - offset.x, bz - offset.y, radius, kind, amount, push]);
@@ -298,20 +305,25 @@ const cloudScene = (() => {
     const mist = mistTime > 0.08;
     for (const t of touches) {
       const f = t.finger;
+      // beyond the reach, a stroke would show up again in a nearer copy of the tile
+      if (Math.hypot(t.x - camera.position.x, t.z - camera.position.z) > PAINT_REACH) continue;
+      // far off, the brush widens with the distance, so a stroke is about as
+      // wide on the screen wherever it is drawn
+      const vs = viewScale * brushScale(t.x, t.z);
       const moved = Math.hypot(t.x - t.px, t.z - t.pz);
-      if (!f.cloudMode) f.cloudMode = "sky";
+      if (!f.cloudMode || f.cloudMode === "none") f.cloudMode = "sky";
       if (f.cloudMode === "sky") {
-        edit(t.px, t.pz, t.x, t.z, 0.75 * viewScale * (1 + 0.5 * t.depth), 0, (0.07 + 0.05 * t.depth) * frames);
+        edit(t.px, t.pz, t.x, t.z, 0.75 * vs * (1 + 0.5 * t.depth), 0, (0.07 + 0.05 * t.depth) * frames);
         if (mist && moved > 0.01) burst({ x: t.x, y: 0, z: t.z }, MIST, 0.15, "pollen", 2);
       } else if (moved > 0.004) {
         // pulling the cloud along; the faster the pull, the thinner it goes
-        const R = 1.2 * viewScale * (1 + 0.4 * t.depth);
+        const R = 1.2 * vs * (1 + 0.4 * t.depth);
         edit(t.px, t.pz, t.x, t.z, R, 1, Math.min(moved / R, 1) * 0.3);
         f.holeTime = 0;
       } else if (t.speed < 0.3) {
         // resting in a cloud: the hole keeps opening, to about a metre and a half
         f.holeTime = (f.holeTime || 0) + dt;
-        const r = (0.5 + 1.0 * smooth(0, 1, f.holeTime / 3)) * viewScale;
+        const r = (0.5 + 1.0 * smooth(0, 1, f.holeTime / 3)) * vs;
         edit(t.x, t.z, t.x, t.z, r, 2, 0.02 * frames, 0.022 * frames);
       }
     }
@@ -358,11 +370,13 @@ const cloudScene = (() => {
     // where a finger lands decides what it does: open sky draws, a cloud is
     // pulled or, poked, opened
     tap(f) {
+      if (Math.hypot(f.world.x - camera.position.x, f.world.z - camera.position.z) > PAINT_REACH) { f.cloudMode = "none"; return; }
       const onCloud = cloudAt(f.world.x, f.world.z) > 0.25;
       f.cloudMode = onCloud ? "cloud" : "sky";
       f.holeTime = 0;
       if (onCloud) {
-        edit(f.world.x, f.world.z, f.world.x, f.world.z, 0.6, 2, 0.45, 0.3);
+        const s = 0.6 * brushScale(f.world.x, f.world.z);
+        edit(f.world.x, f.world.z, f.world.x, f.world.z, s, 2, 0.45, 0.3);
         burst(f.world, MIST, 0.4, "pollen", 10);
       }
     },
