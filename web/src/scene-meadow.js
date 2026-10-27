@@ -1,6 +1,7 @@
 // ---- scene: the meadow ---------------------------------------------------------
-// Long grass that parts round each finger and closes behind it, rings of light
-// from every pluck, pollen, and blades that sway and glint with the music.
+// A summer meadow: long grass and wildflowers that part round each finger and
+// close behind it, butterflies that start up where a finger runs through, rings
+// of light from every pluck, pollen, and blades that sway and glint with the music.
 const meadowScene = (() => {
   const group = new THREE.Group();
 
@@ -48,12 +49,12 @@ const meadowScene = (() => {
 
   const COMMON_GLSL = `
     uniform sampler2D uNoise;
-    float dryAt(vec2 xz) { return smoothstep(0.42, 0.66, texture2D(uNoise, xz / 64.0).r); }
+    float dryAt(vec2 xz) { return smoothstep(0.5, 0.75, texture2D(uNoise, xz / 64.0).r) * 0.55; }
     float lushAt(vec2 xz) { return texture2D(uNoise, xz / 64.0 + vec2(0.37, 0.11)).g; }
     vec3 grassLow(vec2 xz) { return mix(vec3(0.018, 0.05, 0.010), vec3(0.11, 0.09, 0.03), dryAt(xz)); }
     vec3 grassHigh(vec2 xz) {
-      vec3 green = mix(vec3(0.20, 0.36, 0.03), vec3(0.36, 0.48, 0.045), lushAt(xz));
-      return mix(green, vec3(0.56, 0.44, 0.11), dryAt(xz));
+      vec3 green = mix(vec3(0.20, 0.40, 0.04), vec3(0.38, 0.56, 0.06), lushAt(xz));
+      return mix(green, vec3(0.64, 0.54, 0.18), dryAt(xz));
     }
     vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
   `;
@@ -253,6 +254,318 @@ const meadowScene = (() => {
     grassUniforms.uWidthScale.value = Math.sqrt(MAX_BLADES / budget) * 0.9;
   }
 
+  // ---- wildflowers ------------------------------------------------------------------
+  // A summer meadow's flowers among the grass: daisies, buttercups, cornflowers,
+  // poppies, clover and cow parsley, each kind growing in its own drifts, thick
+  // in places and sparse in others. Each is a stem and a head; the stem bends in
+  // the wind and parts round a finger like the grass, and the head's petals are
+  // drawn in the shader, so a flower is thirteen vertices.
+  const FLOWERS = 9000;
+  function flowerGeometry() {
+    const pos = [], part = [], idx = [];
+    const S = 4;
+    for (let k = 0; k <= S; k++) { const t = k / S; pos.push(-0.5, t, 0, 0.5, t, 0); part.push(0, 0); }
+    for (let k = 0; k < S; k++) { const a = k * 2; idx.push(a, a + 2, a + 1, a + 1, a + 2, a + 3); }
+    const h = pos.length / 3;
+    for (const [x, z] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) { pos.push(x, 0, z); part.push(1); }
+    idx.push(h, h + 2, h + 1, h, h + 3, h + 2);
+    const g = new THREE.InstancedBufferGeometry();
+    g.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute("aPart", new THREE.Float32BufferAttribute(part, 1));
+    g.setIndex(idx);
+    const seeds = new Float32Array(FLOWERS * 4);
+    let s = 987654;
+    for (let i = 0; i < seeds.length; i++) { s = (s * 1664525 + 1013904223) >>> 0; seeds[i] = s / 4294967296; }
+    g.setAttribute("aSeed", new THREE.InstancedBufferAttribute(seeds, 4));
+    g.instanceCount = FLOWERS;
+    return g;
+  }
+  const flowerUniforms = Object.assign({}, grassUniforms, { uFieldMax: groundMat.uniforms.uFieldMax });
+  const flowerMat = new THREE.ShaderMaterial({
+    uniforms: flowerUniforms,
+    side: THREE.DoubleSide,
+    vertexShader: `
+      attribute float aPart; attribute vec4 aSeed;
+      uniform sampler2D uBend, uRipple; uniform vec3 uRect;
+      uniform float uTime, uWind, uGustSpeed;
+      uniform vec2 uFieldMin, uFieldMax, uWindDir;
+      varying float vPart, vSpecies; varying vec2 vQuad; varying vec3 vWorld, vGlow; varying float vT;
+      ${COMMON_GLSL}
+      void main() {
+        vec2 root = mix(uFieldMin, uFieldMax, aSeed.xy);
+        // drifts: where flowers grow thick, and which kind grows there
+        float drift = texture2D(uNoise, root / 21.0 + 0.5).g;
+        float density = 0.12 + 0.88 * smoothstep(0.42, 0.66, drift);
+        float keep = step(aSeed.z, density);
+        float kind = mod(floor(texture2D(uNoise, root / 37.0 + 0.2).a * 14.0) + floor(aSeed.w * 1.7), 6.0);
+        vSpecies = kind;
+        // 0 daisy, 1 buttercup, 2 cornflower, 3 poppy, 4 clover, 5 cow parsley
+        float H = (kind > 4.5 ? 0.85 : kind > 3.5 ? 0.42 : kind > 2.5 ? 0.66 : 0.58) * (0.8 + 0.4 * fract(aSeed.w * 7.3));
+        float R = (kind > 4.5 ? 0.11 : kind > 3.5 ? 0.04 : kind > 2.5 ? 0.085 : kind > 1.5 ? 0.06 : kind > 0.5 ? 0.045 : 0.07);
+
+        // the same wind and the same parting as the grass, a little stiffer
+        vec2 wd = uWindDir;
+        vec2 q = root - wd * uTime * uGustSpeed;
+        float n = texture2D(uNoise, q / 100.0).a * 0.65 + texture2D(uNoise, q / 32.0 + vec2(0.3, 0.7)).a * 0.35;
+        float g = smoothstep(0.45, 0.78, n);
+        float sway = sin(uTime * (1.8 + aSeed.w) + aSeed.x * 40.0);
+        vec2 v = wd * uWind * (0.15 + 0.8 * g) + wd * sway * 0.06 + (aSeed.yx - 0.5) * 0.25;
+        vec2 buv = (root - uRect.xy) / uRect.z;
+        float inside = step(0.0, buv.x) * step(buv.x, 1.0) * step(0.0, buv.y) * step(buv.y, 1.0);
+        vec4 b = texture2D(uBend, buv);
+        vec2 push = (b.rg - 0.5) * 2.0 * inside;
+        v = v * (1.0 - 0.6 * min(length(push), 1.0)) + push * 1.3;
+        float vl = max(length(v), 1e-4);
+        float a = min(vl, 1.3) * 0.75;
+        vec3 hd = vec3(v.x / vl, 0.0, v.y / vl);
+        vec3 tip = hd * sin(a) * H + vec3(0.0, cos(a) * H, 0.0);
+        vGlow = texture2D(uRipple, buv).rgb * inside;
+
+        vec3 local;
+        if (aPart < 0.5) {
+          float t = position.y;
+          local = hd * sin(a) * H * t * t + vec3(0.0, cos(a) * H * t, 0.0);
+          vec3 side = normalize(cross(hd + vec3(0.0001, 0.0, 0.0), vec3(0.0, 1.0, 0.0)));
+          local += side * position.x * 0.014;
+          vT = t; vQuad = vec2(0.0);
+        } else {
+          // the head faces up, tipped the way the stem leans
+          vec3 nrm = normalize(vec3(hd.x * sin(a) * 0.9, 1.0, hd.z * sin(a) * 0.9) + vec3(aSeed.y - 0.5, 0.0, aSeed.x - 0.5) * 0.3);
+          vec3 ta = normalize(cross(nrm, vec3(0.0, 0.0, 1.0)));
+          vec3 tb = cross(ta, nrm);
+          local = tip + (ta * position.x + tb * position.z) * R + nrm * 0.005;
+          vT = 1.0; vQuad = position.xz;
+        }
+        vPart = aPart;
+        vec3 world = vec3(root.x, -0.02, root.y) + local * keep;
+        vWorld = world;
+        gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);     // a flower not grown here collapses to a point
+      }`,
+    fragmentShader: `
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
+      varying float vPart, vSpecies; varying vec2 vQuad; varying vec3 vWorld, vGlow; varying float vT;
+      vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+      void main() {
+        vec3 col;
+        if (vPart < 0.5) {
+          col = mix(vec3(0.05, 0.12, 0.02), vec3(0.18, 0.34, 0.06), vT);
+        } else {
+          vec2 q = vQuad;
+          float r = length(q), ang = atan(q.y, q.x);
+          float k = vSpecies;
+          if (k < 0.5) {            // daisy: a ring of thin white petals round a yellow eye
+            float petal = 0.32 + 0.68 * pow(abs(cos(ang * 6.5)), 0.5);
+            if (r > petal) discard;
+            col = r < 0.3 ? vec3(0.95, 0.72, 0.08) : vec3(0.96, 0.96, 0.92);
+          } else if (k < 1.5) {     // buttercup: five round glossy petals
+            float petal = 0.45 + 0.55 * pow(abs(cos(ang * 2.5)), 0.4);
+            if (r > petal) discard;
+            col = mix(vec3(1.0, 0.82, 0.05), vec3(1.0, 0.95, 0.5), smoothstep(0.5, 0.0, r) * 0.6);
+          } else if (k < 2.5) {     // cornflower: ragged blue florets, a dark heart
+            float petal = 0.55 + 0.45 * pow(abs(cos(ang * 4.0)), 0.25) * (0.75 + 0.25 * step(0.5, fract(ang * 2.55)));
+            if (r > petal) discard;
+            col = r < 0.25 ? vec3(0.22, 0.1, 0.35) : vec3(0.2, 0.36, 0.95);
+          } else if (k < 3.5) {     // poppy: four broad red petals, a black eye
+            float petal = 0.62 + 0.38 * abs(cos(ang * 2.0));
+            if (r > petal) discard;
+            col = r < 0.2 ? vec3(0.04, 0.03, 0.03) : vec3(0.9, 0.07, 0.04) * (0.8 + 0.2 * r);
+          } else if (k < 4.5) {     // clover: a pink ball of florets
+            float petal = 0.85 + 0.15 * cos(ang * 9.0);
+            if (r > petal) discard;
+            col = mix(vec3(0.95, 0.65, 0.8), vec3(0.75, 0.3, 0.5), r);
+          } else {                  // cow parsley: an umbel of tiny white flowers
+            vec2 c = fract(q * 3.5) - 0.5;
+            if (r > 1.0 || length(c) > 0.32) discard;
+            col = vec3(0.95, 0.95, 0.88);
+          }
+        }
+        float lam = vPart < 0.5 ? 0.6 : max(uSunDir.y, 0.0) * 0.6 + 0.4;
+        vec3 lit = col * (uAmbient * 0.9 + uSunCol * lam * 1.2) + vGlow * 0.4 * vT;
+        float fog = 1.0 - exp(-uFogDensity * length(vWorld - cameraPosition));
+        gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), 1.0);
+      }`,
+  });
+  const flowers = new THREE.Mesh(flowerGeometry(), flowerMat);
+  flowers.frustumCulled = false;
+  group.add(flowers);
+
+  // ---- butterflies ------------------------------------------------------------------
+  // They rest in the grass until a finger comes through, then flutter up from
+  // around it: cabbage whites, brimstones, common blues, peacocks, small
+  // tortoiseshells and red admirals. They wander a while on erratic paths,
+  // wings beating and now and then held up in a glide, then settle on the grass
+  // again with their wings slowly opening and closing, until disturbed. Two
+  // hinged wings each; the shape and the markings are drawn in the shader.
+  const FLIES = 28;
+  const fly = Array.from({ length: FLIES }, () => ({
+    mode: 0,                    // 0 hidden, 1 flying, 2 landing, 3 resting
+    x: 0, y: 0, z: 0, vx: 0, vy: 0, vz: 0, yaw: 0, turn: 0, phase: 0, rate: 7, glide: 0,
+    air: 0, rest: 0, cruise: 1.2, kind: 0, scale: 1, fade: 0,
+  }));
+  const flyGeo = new THREE.InstancedBufferGeometry();
+  {
+    // a wing reaches from the body (x 0) out to x 1, from tail (z -0.5) to head (z 0.5)
+    const pos = [], side = [], idx = [];
+    for (const sgn of [1, -1]) {
+      const b = pos.length / 3;
+      for (const [x, z] of [[0, -0.5], [1, -0.5], [1, 0.5], [0, 0.5]]) { pos.push(x, 0, z); side.push(sgn); }
+      idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+    }
+    flyGeo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    flyGeo.setAttribute("aSide", new THREE.Float32BufferAttribute(side, 1));
+    flyGeo.setIndex(idx);
+  }
+  const aPose = new THREE.InstancedBufferAttribute(new Float32Array(FLIES * 4), 4);   // x, y, z, heading
+  const aWing = new THREE.InstancedBufferAttribute(new Float32Array(FLIES * 4), 4);   // flap angle, kind, size, fade
+  flyGeo.setAttribute("aPose", aPose);
+  flyGeo.setAttribute("aWing", aWing);
+  flyGeo.instanceCount = FLIES;
+  const flyMat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({}, lightUniforms),
+    side: THREE.DoubleSide, transparent: true, depthWrite: true,
+    vertexShader: `
+      attribute float aSide; attribute vec4 aPose, aWing;
+      varying vec2 vUv; varying float vKind, vFade, vUp; varying vec3 vWorld;
+      void main() {
+        float u = position.x;
+        float th = aWing.x;
+        vec3 p = vec3(aSide * u * cos(th), u * sin(th), position.z) * aWing.z;
+        float c = cos(aPose.w), s = sin(aPose.w);
+        p = vec3(c * p.x + s * p.z, p.y, -s * p.x + c * p.z);
+        vec3 world = aPose.xyz + p;
+        vWorld = world; vUv = vec2(u, position.z + 0.5); vKind = aWing.y; vFade = aWing.w;
+        vUp = cos(th);
+        gl_Position = projectionMatrix * viewMatrix * vec4(world, 1.0);
+      }`,
+    fragmentShader: `
+      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
+      varying vec2 vUv; varying float vKind, vFade, vUp; varying vec3 vWorld;
+      vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }
+      float ell(vec2 p, vec2 c, vec2 r, float tilt) {
+        vec2 d = p - c; float cs = cos(tilt), sn = sin(tilt);
+        d = vec2(cs * d.x + sn * d.y, -sn * d.x + cs * d.y) / r;
+        return length(d);
+      }
+      void main() {
+        vec2 p = vUv;
+        float fore = ell(p, vec2(0.45, 0.66), vec2(0.56, 0.3), 0.5);
+        float hind = ell(p, vec2(0.33, 0.3), vec2(0.36, 0.27), -0.3);
+        float body = step(p.x, 0.07) * step(0.12, p.y) * step(p.y, 0.92);
+        float wing = min(fore, hind);
+        if (wing > 1.0 && body < 0.5) discard;
+        float edge = smoothstep(0.82, 1.0, wing);
+        vec3 col;
+        float k = vKind;
+        if (k < 0.5) {          // cabbage white: white, black tips
+          col = vec3(0.96, 0.96, 0.92);
+          col = mix(col, vec3(0.08), step(fore, 1.0) * smoothstep(0.62, 0.7, ell(p, vec2(0.0, 0.5), vec2(1.0, 1.0), 0.0)) * step(0.62, p.y));
+        } else if (k < 1.5) {   // brimstone: sulphur yellow, an orange dot
+          col = vec3(0.98, 0.9, 0.3);
+          col = mix(col, vec3(0.95, 0.5, 0.1), step(ell(p, vec2(0.45, 0.62), vec2(0.05, 0.05), 0.0), 1.0));
+        } else if (k < 2.5) {   // common blue: blue, a pale fringe
+          col = mix(vec3(0.35, 0.5, 0.98), vec3(0.95), edge);
+        } else if (k < 3.5) {   // peacock: rust red with eye spots
+          col = vec3(0.6, 0.12, 0.06);
+          float e1 = ell(p, vec2(0.7, 0.78), vec2(0.13, 0.11), 0.4), e2 = ell(p, vec2(0.45, 0.22), vec2(0.13, 0.11), 0.0);
+          float e = min(e1, e2);
+          col = mix(col, vec3(0.95, 0.85, 0.5), step(e, 1.0));
+          col = mix(col, vec3(0.2, 0.35, 0.8), step(e, 0.65));
+          col = mix(col, vec3(0.05), step(e, 0.35));
+        } else if (k < 4.5) {   // small tortoiseshell: orange, black blotches, a blue-studded rim
+          col = vec3(0.95, 0.45, 0.08);
+          col = mix(col, vec3(0.08), step(fract(p.x * 3.0 + p.y * 1.5), 0.25) * step(0.5, p.y) * step(fore, 0.9));
+          col = mix(col, vec3(0.25, 0.4, 0.95), edge * step(0.5, fract(p.y * 12.0)));
+        } else {                // red admiral: black, an orange band
+          col = vec3(0.07, 0.06, 0.06);
+          float band = abs(ell(p, vec2(0.0, 1.0), vec2(0.75, 0.6), 0.0) - 1.0);
+          col = mix(col, vec3(0.95, 0.35, 0.08), step(band, 0.1) * step(fore, 1.0));
+          col = mix(col, vec3(0.95, 0.35, 0.08), step(0.86, hind) * step(hind, 1.0) * step(fore, hind));
+          col = mix(col, vec3(0.95), step(ell(p, vec2(0.72, 0.85), vec2(0.06, 0.05), 0.0), 1.0));
+        }
+        col = mix(col, col * 0.35, edge * 0.6);
+        if (body > 0.5 && wing > 0.98) col = vec3(0.06, 0.05, 0.04);
+        float lam = 0.55 + 0.45 * abs(vUp);
+        vec3 lit = col * (uAmbient * 0.8 + uSunCol * lam * 1.1);
+        float fog = 1.0 - exp(-uFogDensity * length(vWorld - cameraPosition));
+        gl_FragColor = vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)), vFade);
+      }`,
+  });
+  const flyMesh = new THREE.Mesh(flyGeo, flyMat);
+  flyMesh.frustumCulled = false;
+  flyMesh.renderOrder = 12;
+  group.add(flyMesh);
+
+  function takeOff(b, fromX, fromZ) {
+    b.mode = 1; b.air = 0;
+    b.cruise = 0.9 + Math.random() * 0.8;
+    b.rate = 6 + Math.random() * 3;
+    const away = Math.atan2(b.x - fromX, b.z - fromZ) + (Math.random() - 0.5) * 1.2;
+    b.yaw = away;
+    const sp = 0.8 + Math.random() * 0.6;
+    b.vx = Math.sin(away) * sp; b.vz = Math.cos(away) * sp; b.vy = 1.0 + Math.random() * 0.8;
+    b.rest = 6 + Math.random() * 10;    // seconds in the air before it looks for a place to land
+  }
+  function spawnFly(x, z) {
+    let b = fly.find((f) => f.mode === 0);
+    if (!b) {
+      // all in use: the resting one farthest from here moves
+      let far = -1;
+      for (const f of fly) if (f.mode === 3) { const d = Math.hypot(f.x - x, f.z - z); if (d > far) { far = d; b = f; } }
+      if (!b) return;
+    }
+    const a = Math.random() * 6.28, r = 0.2 + Math.random() * 0.6;
+    b.x = x + Math.cos(a) * r; b.z = z + Math.sin(a) * r; b.y = GRASS_TOP * 0.7;
+    b.kind = Math.floor(Math.random() * 6); b.scale = 0.16 + Math.random() * 0.08;
+    b.phase = Math.random() * 6.28; b.fade = b.mode === 0 ? 0 : b.fade;
+    takeOff(b, x, z);
+  }
+  let flySpawn = 0;
+  function flyButterflies(dt, touches, time) {
+    // fingers through the grass: butterflies start up, and resting ones nearby take off
+    for (const t of touches) {
+      if (t.speed > 0.7) flySpawn += dt * Math.min(t.speed, 6) * 0.5;
+      while (flySpawn >= 1) { flySpawn -= 1; spawnFly(t.x, t.z); }
+      for (const b of fly) if (b.mode >= 2 && Math.hypot(b.x - t.x, b.z - t.z) < 1.2) takeOff(b, t.x, t.z);
+    }
+    const cx = currentLook.x, cz = currentLook.z;
+    for (let i = 0; i < FLIES; i++) {
+      const b = fly[i];
+      if (b.mode === 0) { aWing.setXYZW(i, 0, 0, 0, 0); continue; }
+      b.fade = Math.min(1, b.fade + dt * 3);
+      let flap;
+      if (b.mode === 1 || b.mode === 2) {
+        b.air += dt;
+        // an erratic path: the heading wanders, and the flight bobs
+        b.turn += (Math.random() - 0.5) * 9 * dt - b.turn * 1.5 * dt;
+        b.yaw += b.turn * dt;
+        const toX = cx - b.x, toZ = cz - b.z, home = Math.hypot(toX, toZ);
+        if (home > 7) b.yaw += Math.sign(Math.sin(Math.atan2(toX, toZ) - b.yaw)) * dt * 1.2;   // turn back toward the view
+        const sp = b.mode === 2 ? 0.5 : b.cruise;
+        b.vx += (Math.sin(b.yaw) * sp - b.vx) * dt * 2;
+        b.vz += (Math.cos(b.yaw) * sp - b.vz) * dt * 2;
+        const wantY = b.mode === 2 ? GRASS_TOP + 0.03 : 1.0 + 0.5 * Math.sin(b.phase + time * 0.7);
+        b.vy += ((wantY - b.y) * 2.5 - b.vy) * dt * 2 + Math.sin(time * b.rate * 6.283 + b.phase) * 0.6 * dt;
+        b.x += b.vx * dt; b.y += b.vy * dt; b.z += b.vz * dt;
+        // now and then the wings are held up in a short glide
+        if (b.glide > 0) b.glide -= dt; else if (Math.random() < dt * 0.25) b.glide = 0.3 + Math.random() * 0.4;
+        b.phase += dt * b.rate * 6.283 * (b.glide > 0 ? 0.15 : 1);
+        flap = b.glide > 0 ? 1.1 : 0.15 + 1.05 * (0.5 + 0.5 * Math.sin(b.phase));
+        if (b.mode === 1 && b.air > b.rest) b.mode = 2;
+        if (b.mode === 2 && b.y < GRASS_TOP + 0.08) { b.mode = 3; b.y = GRASS_TOP + 0.03; b.rest = 20 + Math.random() * 30; }
+      } else {
+        // resting: the wings open and close slowly
+        b.phase += dt * 1.2;
+        flap = 1.25 - 0.9 * (0.5 + 0.5 * Math.sin(b.phase));
+        b.rest -= dt;
+        if (b.rest < 0) { b.fade -= dt * 6; if (b.fade <= 0) b.mode = 0; }   // gone back into the grass
+      }
+      aPose.setXYZW(i, b.x, b.y, b.z, b.yaw);
+      aWing.setXYZW(i, flap, b.kind, b.scale, b.fade);
+    }
+    aPose.needsUpdate = true;
+    aWing.needsUpdate = true;
+  }
+
   const bendTouch = bendMat.uniforms.uTouch.value, bendDrag = bendMat.uniforms.uDrag.value;
 
   // touches: {x, z, radius, press, dx, dz, strength} from the core, one per finger
@@ -276,6 +589,7 @@ const meadowScene = (() => {
     bendMat.uniforms.uInit.value = 0;
     [bendA, bendB] = [bendB, bendA];
     grassUniforms.uBend.value = bendA.texture;
+    flyButterflies(dt, touches, time);
   }
 
   // keep the frame rate: fewer blades on a struggling phone, more on a strong one
