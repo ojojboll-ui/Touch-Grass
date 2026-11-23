@@ -541,10 +541,12 @@ const bubbleScene = (() => {
   }
 
   // seen from among the bubbles, the garden behind them
+  // straight down first, then lower step by step, each still high enough that
+  // the bubbles at the top of the screen are seen and can be reached
   const VIEWS_AMONG = [
-    { name: "Bland bubblorna", pos: [0.0, 3.0, 7.0], look: [0, 1.3, 0.0], fov: 50 },
-    { name: "Snett ovanifrån", pos: [0.0, 6.0, 8.0], look: [0, 1.2, 0.0], fov: 52 },
-    { name: "Över gräsmattan", pos: [3.5, 4.2, 6.5], look: [-0.5, 1.2, -1.0], fov: 52 },
+    { name: "Rakt uppifrån",   pos: [0.0, 9.5, 0.3], look: [0, 1.4, 0.0], fov: 50 },
+    { name: "Snett ovanifrån", pos: [0.0, 8.0, 4.8], look: [0, 1.4, 0.0], fov: 50 },
+    { name: "Lite snett",      pos: [0.0, 6.2, 6.8], look: [0, 1.4, 0.0], fov: 50 },
   ];
 
   // ---- making and popping ----
