@@ -361,7 +361,7 @@ const cloudScene = (() => {
 
   return {
     id: "clouds", name: "Moln", group,
-    chords: [[10, 3], [0, 2], [9, 4], [2, 1]],          // Bbmaj7 C7 Am7 Dm: IVmaj7 V7 iii7 vi, the romantic "royal road" of ballads
+    chords: [[5, 3], [4, 4], [2, 4], [0, 3]],           // Fmaj7 Em7 Dm7 Cmaj7: a slow stair down through sevenths, never pulled home, floating
     views: VIEWS_BELOW,
     sound: { voice: 6, ring: 6, wet: 0.5 },
     touchHeight: 0.0, glowHeight: -0.1,
