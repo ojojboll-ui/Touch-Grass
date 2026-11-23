@@ -139,24 +139,12 @@ body {
 .scene-pick { font-size: 0.95rem; padding: 9px 18px; }
 .scene-pick[aria-pressed="true"] { background: var(--pollen); color: var(--dusk); border-color: var(--pollen); }
 @media (prefers-reduced-motion: reduce) { #start, #hint { transition: none; } }
-/* the eye: two lids that close over a scene change and open on the next */
-/* each lid's edge arches away from the middle, as an eye's opening does, and
-   fades out softly over a wide band; shut, the lids overlap past the middle */
-.lid { position: fixed; left: -10vw; width: 120vw; height: 85vh; background: #050604; z-index: 30;
-       pointer-events: none; transition: transform 0.34s cubic-bezier(0.55, 0, 0.75, 0.4); }
-.lid.top { top: 0; transform: translateY(-112%);
-           -webkit-mask-image: radial-gradient(ellipse 62% 34vh at 50% 100%, transparent 45%, #000 100%);
-                   mask-image: radial-gradient(ellipse 62% 34vh at 50% 100%, transparent 45%, #000 100%); }
-.lid.bot { bottom: 0; transform: translateY(112%);
-           -webkit-mask-image: radial-gradient(ellipse 62% 26vh at 50% 0%, transparent 45%, #000 100%);
-                   mask-image: radial-gradient(ellipse 62% 26vh at 50% 0%, transparent 45%, #000 100%); }
-.eye-shut .lid.top { transform: translateY(32vh); }
-.eye-shut .lid.bot { transform: translateY(-32vh); }
-.eye-opening .lid { transition: transform 0.6s cubic-bezier(0.2, 0.6, 0.3, 1); }
+/* the eye: a black layer with a soft almond opening, drawn as it closes and opens */
+#eye { position: fixed; inset: 0; width: 100vw; height: 100vh; z-index: 30; pointer-events: none; display: none; }
 </style>
 
 <div id="stage"></div>
-<div class="lid top"></div><div class="lid bot"></div>
+<canvas id="eye"></canvas>
 <div id="plates"></div>
 <div id="controls" hidden>
   <button class="chip" id="settings-open" type="button">Inställningar</button>
@@ -502,22 +490,54 @@ let activeScene = meadowScene;
 // Changing scene is a blink: the lids close, the scene and its camera change
 // while the eye is shut (no camera swinging across between them), the lids open
 let blinking = false;
+const eye = document.getElementById("eye"), eyeCtx = eye.getContext("2d");
+// how open the eye is, 0..1: black all round a feathered almond, its lids
+// arching away from the middle, that narrows to a line and is gone
+function drawEye(open) {
+  const w = eye.width = Math.max(1, Math.round(window.innerWidth / 2));
+  const h = eye.height = Math.max(1, Math.round(window.innerHeight / 2));
+  eyeCtx.globalCompositeOperation = "source-over";
+  eyeCtx.fillStyle = "#050604";
+  eyeCtx.fillRect(0, 0, w, h);
+  if (open <= 0.001) return;
+  eyeCtx.globalCompositeOperation = "destination-out";
+  // fully open, the almond reaches well past every edge of the screen
+  const rx = w * (0.55 + 0.9 * open), ry = h * 1.25 * open;
+  eyeCtx.save();
+  eyeCtx.translate(w / 2, h / 2);
+  eyeCtx.scale(rx, ry);
+  const g = eyeCtx.createRadialGradient(0, 0, 0, 0, 0, 1);
+  g.addColorStop(0, "rgba(0,0,0,1)");
+  g.addColorStop(0.55, "rgba(0,0,0,1)");
+  g.addColorStop(1, "rgba(0,0,0,0)");
+  eyeCtx.fillStyle = g;
+  eyeCtx.beginPath();
+  // an almond: two arcs meeting in points at the corners of the eye
+  eyeCtx.moveTo(-1, 0);
+  eyeCtx.quadraticCurveTo(0, -1.25, 1, 0);
+  eyeCtx.quadraticCurveTo(0, 1.25, -1, 0);
+  eyeCtx.fill();
+  eyeCtx.restore();
+}
+function animateEye(from, to, seconds, done) {
+  const t0 = performance.now();
+  const stepEye = () => {
+    const u = Math.min(1, (performance.now() - t0) / (seconds * 1000));
+    const e = to < from ? u * u : 1 - (1 - u) * (1 - u) * (1 - u);   // closing speeds up, opening eases out
+    drawEye(from + (to - from) * e);
+    if (u < 1) setTimeout(stepEye, 16); else done();
+  };
+  stepEye();
+}
 function blinkToScene(id) {
   if (blinking || id === activeScene.id) return;
   blinking = true;
-  document.body.classList.remove("eye-opening");
-  document.body.classList.add("eye-shut");
-  setTimeout(() => {
+  eye.style.display = "block";
+  animateEye(1, 0, 0.32, () => {
     setScene(id, true);
-    // a moment for the new scene to settle before the eye opens on it (a timer,
-    // not animation frames: those stop while a page is hidden, and the eye
-    // would stay shut)
-    setTimeout(() => {
-      document.body.classList.add("eye-opening");
-      document.body.classList.remove("eye-shut");
-      setTimeout(() => { document.body.classList.remove("eye-opening"); blinking = false; }, 650);
-    }, 80);
-  }, 360);
+    // a moment for the new scene to settle before the eye opens on it
+    setTimeout(() => animateEye(0, 1, 0.6, () => { eye.style.display = "none"; blinking = false; }), 90);
+  });
 }
 function setScene(id, instant = false) {
   const next = SCENES.find((sc) => sc.id === id) || meadowScene;
