@@ -139,9 +139,19 @@ body {
 .scene-pick { font-size: 0.95rem; padding: 9px 18px; }
 .scene-pick[aria-pressed="true"] { background: var(--pollen); color: var(--dusk); border-color: var(--pollen); }
 @media (prefers-reduced-motion: reduce) { #start, #hint { transition: none; } }
+/* the eye: two lids that close over a scene change and open on the next */
+.lid { position: fixed; left: -10vw; width: 120vw; height: 62vh; background: #050604; z-index: 30;
+       pointer-events: none; transition: transform 0.34s cubic-bezier(0.55, 0, 0.75, 0.4); }
+.lid.top { top: 0; border-radius: 0 0 50% 50% / 0 0 34% 34%; transform: translateY(-104%);
+           box-shadow: 0 6px 18px 6px rgba(5, 6, 4, 0.55); }
+.lid.bot { bottom: 0; border-radius: 50% 50% 0 0 / 22% 22% 0 0; transform: translateY(104%);
+           box-shadow: 0 -6px 18px 6px rgba(5, 6, 4, 0.55); }
+.eye-shut .lid { transform: translateY(0); }
+.eye-opening .lid { transition: transform 0.6s cubic-bezier(0.2, 0.6, 0.3, 1); }
 </style>
 
 <div id="stage"></div>
+<div class="lid top"></div><div class="lid bot"></div>
 <div id="plates"></div>
 <div id="controls" hidden>
   <button class="chip" id="settings-open" type="button">Inställningar</button>
@@ -484,7 +494,27 @@ let activeScene = meadowScene;
 // Switch scene: its surface replaces the last one, fingers meet it at its
 // height, and its sound (strings, ring time, room) comes in. A sound the player
 // changed in a scene is remembered for that scene.
-function setScene(id) {
+// Changing scene is a blink: the lids close, the scene and its camera change
+// while the eye is shut (no camera swinging across between them), the lids open
+let blinking = false;
+function blinkToScene(id) {
+  if (blinking || id === activeScene.id) return;
+  blinking = true;
+  document.body.classList.remove("eye-opening");
+  document.body.classList.add("eye-shut");
+  setTimeout(() => {
+    setScene(id, true);
+    // a moment for the new scene to settle before the eye opens on it (a timer,
+    // not animation frames: those stop while a page is hidden, and the eye
+    // would stay shut)
+    setTimeout(() => {
+      document.body.classList.add("eye-opening");
+      document.body.classList.remove("eye-shut");
+      setTimeout(() => { document.body.classList.remove("eye-opening"); blinking = false; }, 650);
+    }, 80);
+  }, 360);
+}
+function setScene(id, instant = false) {
   const next = SCENES.find((sc) => sc.id === id) || meadowScene;
   const newViews = (next.views || VIEWS) !== viewsNow();
   if (activeScene !== next) { scene.remove(activeScene.group); activeScene.exit(); }
@@ -493,7 +523,7 @@ function setScene(id) {
   next.enter();
   next.resize();
   plane.constant = -next.touchHeight;
-  if (newViews) goToView(viewIndex, !started);
+  if (newViews) goToView(viewIndex, !started || instant);
   settings.scene = next.id;
   // its chords: what was last played here, or the scene's own progression
   settings.chords = (settings.chordsByScene[next.id] || sceneChords(next)).map((c) => c.slice());
@@ -1079,11 +1109,11 @@ $("drone-bright").addEventListener("input", (e) => { settings.droneBright = pars
 for (const sc of SCENES) {
   const b = document.createElement("button");
   b.className = "chip scene-pick"; b.type = "button"; b.textContent = sc.name; b.dataset.scene = sc.id;
-  b.addEventListener("click", () => setScene(sc.id));
+  b.addEventListener("click", () => blinkToScene(sc.id));
   $("scene-picks").appendChild(b);
 }
 
-$("scene-next").addEventListener("click", () => setScene(SCENES[(SCENES.indexOf(activeScene) + 1) % SCENES.length].id));
+$("scene-next").addEventListener("click", () => blinkToScene(SCENES[(SCENES.indexOf(activeScene) + 1) % SCENES.length].id));
 $("view").addEventListener("click", () => goToView(viewIndex + 1, false));
 $("clock").addEventListener("click", () => { $("timerow").hidden = !$("timerow").hidden; });
 $("hour").addEventListener("input", (e) => applyHour(parseFloat(e.target.value)));

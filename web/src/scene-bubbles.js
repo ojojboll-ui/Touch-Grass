@@ -1,5 +1,5 @@
 // ---- scene: bubbles ---------------------------------------------------------------
-// Soap bubbles over a garden seen out of focus. A finger drawn across empty air
+// Soap bubbles over the summer meadow, seen out of focus. A finger drawn across empty air
 // lets bubbles go along its path, big when it moves slowly and small when it
 // hurries; a finger held still blows one up under it until it lets go. Bubbles
 // that meet stick together into foam and drift as a clump. A poke pops a bubble
@@ -20,11 +20,11 @@
 // surface and drains toward the top, the path through it grows as the view
 // grazes, and red, green and blue fall in and out of step at different
 // thicknesses. Mostly clear facing you, mostly reflection at the rim. The
-// garden behind is never sharp: soft fields of colour and lens bokeh.
+// meadow behind is the meadow scene itself, blurred by depth of field.
 const bubbleScene = (() => {
   const group = new THREE.Group();
   const MAX = 160, MAX_WALLS = 320, NEAR = 6;   // bubbles, walls, and how many neighbours each one is cut by
-  const LEVEL = 1.0, REACH = 9;                  // the height they float at, how far they may stray
+  const LEVEL = 1.4, REACH = 9;                  // the height they float at, how far they may stray
   const TONEMAP = "vec3 tonemap(vec3 x) { x *= 0.62; return clamp((x * (2.51 * x + 0.03)) / (x * (2.43 * x + 0.59) + 0.14), 0.0, 1.0); }";
   const FAR = 1e4;                               // where an empty neighbour slot sits
 
@@ -191,56 +191,117 @@ const bubbleScene = (() => {
   walls.count = 0;
   group.add(walls);
 
-  // ---- the garden behind, out of focus ----
-  const gardenMat = new THREE.ShaderMaterial({
-    uniforms: Object.assign({ uNoise: { value: noiseTex }, uTime: { value: 0 } }, lightUniforms),
-    vertexShader: `
-      varying vec3 vWorld;
-      void main() { vec4 w = modelMatrix * vec4(position, 1.0); vWorld = w.xyz; gl_Position = projectionMatrix * viewMatrix * w; }`,
+  // ---- the world behind: the summer meadow, out of focus ----
+  // The meadow scene itself, rendered on its own each frame (grass, flowers,
+  // butterflies, wind and all), then blurred by its distance from the bubbles
+  // in focus: a lens's depth of field. Every point spreads into a disc as wide
+  // as it is out of focus, and bright points more than dark ones, so glints
+  // and flowers turn into bokeh. Near grass and the far field both melt; the
+  // bubbles, drawn sharp over it, sit in the plane of focus.
+  const worldScene = new THREE.Scene();
+  const worldSize = new THREE.Vector2(2, 2);
+  function halfTarget(depth) {
+    const t = new THREE.WebGLRenderTarget(2, 2, {
+      type: floatTargets ? THREE.HalfFloatType : THREE.UnsignedByteType, format: THREE.RGBAFormat,
+      minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter, depthBuffer: depth, stencilBuffer: false,
+    });
+    if (depth) { t.depthTexture = new THREE.DepthTexture(2, 2); t.depthTexture.type = THREE.UnsignedIntType; }
+    return t;
+  }
+  const worldRT = halfTarget(true), cocRT = halfTarget(false), dofRT = halfTarget(false);
+  const MAX_BLUR = 20;                       // pixels at half resolution
+  // how far out of focus each pixel is, kept beside its colour
+  const cocMat = new THREE.ShaderMaterial({
+    vertexShader: PASS_VERT,
+    uniforms: { uColor: { value: worldRT.texture }, uDepth: { value: worldRT.depthTexture }, uNear: { value: 0.5 }, uFar: { value: 400 },
+                uFocus: { value: 6 }, uAperture: { value: 14 } },
     fragmentShader: `
-      uniform sampler2D uNoise; uniform float uTime;
-      uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol;
-      varying vec3 vWorld;
-      ${TONEMAP}
-      float hash12(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * 0.1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
-      vec2 hash22(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973)); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.xx + p3.yz) * p3.zy); }
-      // lens bokeh: soft discs with a slightly brighter rim, one in some cells
-      vec3 bokeh(vec2 xz, float cell, float keep, vec3 tint) {
-        vec2 g = xz / cell, c = floor(g), f = fract(g);
-        vec3 sum = vec3(0.0);
-        for (int j = -1; j <= 1; j++) for (int i = -1; i <= 1; i++) {
-          vec2 k = c + vec2(float(i), float(j));
-          float h = hash12(k);
-          if (h < keep) continue;
-          vec2 centre = vec2(float(i), float(j)) + hash22(k + 2.7);
-          float r = 0.35 + 0.5 * hash12(k + 9.1);
-          float d = length(f - centre) / r;
-          float disc = smoothstep(1.0, 0.85, d) * (0.7 + 0.3 * smoothstep(0.5, 0.95, d));
-          vec3 hue = mix(tint, vec3(1.0, 0.95, 0.85), hash12(k + 5.3));
-          sum += hue * disc * (h - keep) / (1.0 - keep);
-        }
-        return sum;
-      }
+      uniform sampler2D uColor, uDepth; uniform float uNear, uFar, uFocus, uAperture;
+      varying vec2 vUv;
       void main() {
-        vec2 xz = vWorld.xz + vec2(uTime * 0.05, uTime * 0.03);
-        // soft fields of colour: leaves, a lawn, a flower bed, all melted together
-        float n1 = texture2D(uNoise, xz / 55.0).g, n2 = texture2D(uNoise, xz / 38.0 + 0.3).r, n3 = texture2D(uNoise, xz / 80.0).a;
-        vec3 leaves = mix(vec3(0.07, 0.16, 0.10), vec3(0.20, 0.36, 0.16), smoothstep(0.35, 0.65, n1));
-        vec3 bloom = mix(vec3(0.55, 0.42, 0.20), vec3(0.42, 0.26, 0.40), smoothstep(0.25, 0.45, n2));
-        vec3 col = mix(leaves, bloom, smoothstep(0.52, 0.66, n3) * 0.7);
-        col *= uAmbient * 0.7 + uSunCol * 0.4 * max(uSunDir.y, 0.0);
-        // bokeh: the sun glinting through leaves by day, lights at night
-        float night = 1.0 - smoothstep(0.0, 0.25, uSunDir.y + 0.1);
-        vec3 b = bokeh(xz, 4.5, 0.86, vec3(0.9, 0.95, 0.6)) + bokeh(xz + 11.0, 2.6, 0.9, vec3(0.6, 0.9, 1.0)) * 0.6;
-        col += b * (uSunCol * 0.12 + vec3(1.0, 0.75, 0.45) * 0.3 * night);
-        float fade = 1.0 - exp(-0.004 * length(vWorld - cameraPosition));
-        gl_FragColor = vec4(pow(tonemap(mix(col, uFogCol * 0.6, fade)), vec3(1.0 / 2.2)), 1.0);
+        float z = texture2D(uDepth, vUv).r * 2.0 - 1.0;
+        float dist = 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
+        float coc = clamp(abs(1.0 - uFocus / dist) * uAperture, 0.0, ${MAX_BLUR}.0);
+        gl_FragColor = vec4(texture2D(uColor, vUv).rgb, coc / ${MAX_BLUR}.0);
       }`,
   });
-  const garden = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), gardenMat);
-  garden.rotation.x = -Math.PI / 2;
-  garden.position.y = -6;
-  group.add(garden);
+  // the gather, after Dennis Gustafsson's single-pass bokeh: a golden-angle
+  // spiral outward; a sample counts where its own disc reaches this far
+  const dofMat = new THREE.ShaderMaterial({
+    vertexShader: PASS_VERT,
+    uniforms: { uSrc: { value: cocRT.texture }, uPixel: { value: new THREE.Vector2(0.01, 0.01) } },
+    fragmentShader: `
+      uniform sampler2D uSrc; uniform vec2 uPixel;
+      varying vec2 vUv;
+      void main() {
+        vec4 c0 = texture2D(uSrc, vUv);
+        float centre = c0.a * ${MAX_BLUR}.0;
+        vec3 sum = c0.rgb; float tot = 1.0;
+        float r = 1.0, ang = 0.0;
+        for (int i = 0; i < 64; i++) {
+          if (r > ${MAX_BLUR}.0) break;
+          vec4 s = texture2D(uSrc, vUv + vec2(cos(ang), sin(ang)) * uPixel * r);
+          float size = s.a * ${MAX_BLUR}.0;
+          // something sharp behind does not bleed over a blurred thing in front
+          if (s.a > c0.a) size = min(size, centre * 2.0);
+          float m = smoothstep(r - 0.5, r + 0.5, size);
+          float luma = dot(s.rgb, vec3(0.3, 0.55, 0.15));
+          float w = m * (1.0 + 7.0 * luma * luma * luma * luma);
+          sum += mix(sum / tot, s.rgb, m) * max(w, 1.0 - m);
+          tot += max(w, 1.0 - m);
+          ang += 2.39996323; r += 4.0 / r;
+        }
+        gl_FragColor = vec4(sum / tot, 1.0);
+      }`,
+  });
+  // drawn first, behind everything, filling the screen
+  const backdrop = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
+    uniforms: { uTex: { value: dofRT.texture } },
+    depthTest: false, depthWrite: false,
+    vertexShader: "varying vec2 vUv; void main(){ vUv = uv; gl_Position = vec4(position.xy, 1.0, 1.0); }",
+    fragmentShader: "uniform sampler2D uTex; varying vec2 vUv; void main(){ gl_FragColor = vec4(texture2D(uTex, vUv).rgb, 1.0); }",
+  }));
+  backdrop.frustumCulled = false;
+  backdrop.renderOrder = -100;
+  group.add(backdrop);
+  const bufSize = new THREE.Vector2();
+  function renderWorld(dt, touches, time) {
+    renderer.getDrawingBufferSize(bufSize);
+    const w = Math.max(2, Math.round(bufSize.x / 2)), h = Math.max(2, Math.round(bufSize.y / 2));
+    if (w !== worldSize.x || h !== worldSize.y) {
+      worldSize.set(w, h);
+      for (const t of [worldRT, cocRT, dofRT]) t.setSize(w, h);
+      dofMat.uniforms.uPixel.value.set(1 / w, 1 / h);
+    }
+    meadowScene.update(dt, touches, time);
+    renderer.setRenderTarget(worldRT);
+    renderer.render(worldScene, camera);
+    cocMat.uniforms.uNear.value = camera.near; cocMat.uniforms.uFar.value = camera.far;
+    cocMat.uniforms.uFocus.value = Math.max(1, camera.position.distanceTo(focusAt.set(currentLook.x, LEVEL, currentLook.z)));
+    cocMat.uniforms.uAperture.value = 34 * h / 400;
+    passQuad.material = cocMat;
+    renderer.setRenderTarget(cocRT);
+    renderer.render(passScene, passCam);
+    passQuad.material = dofMat;
+    renderer.setRenderTarget(dofRT);
+    renderer.render(passScene, passCam);
+    renderer.setRenderTarget(null);
+  }
+  const focusAt = new THREE.Vector3();
+
+  // a finger whose view ray does not reach the bubbles' height nearby is in the sky
+  const reachHit = new THREE.Vector3();
+  function reaches(f) {
+    if (f.sx == null || !worldAt(f.sx, f.sy, reachHit)) return false;
+    return Math.hypot(reachHit.x - camera.position.x, reachHit.z - camera.position.z) < 22;
+  }
+
+  // seen from among the bubbles, the meadow running off behind them
+  const VIEWS_AMONG = [
+    { name: "Bland bubblorna", pos: [0.0, 3.0, 7.0], look: [0, 1.3, 0.0], fov: 50 },
+    { name: "Snett ovanifrån", pos: [0.0, 6.0, 8.0], look: [0, 1.2, 0.0], fov: 52 },
+    { name: "Över ängen",      pos: [3.5, 4.2, 6.5], look: [-0.5, 1.2, -1.0], fov: 52 },
+  ];
 
   // ---- making and popping ----
   function spawn(x, z, r, isHeld = false) {
@@ -312,13 +373,14 @@ const bubbleScene = (() => {
   function update(dt, touches, time) {
     mat.uniforms.uTime.value = time;
     wallMat.uniforms.uTime.value = time;
-    gardenMat.uniforms.uTime.value = time;
     const viewScale = viewScaleNow();
+    touches = touches.filter((t) => reaches(t.finger));
+    renderWorld(dt, touches, time);
 
     // fingers: painting, blowing, herding
     for (const t of touches) {
       const f = t.finger;
-      if (!f.bubbleMode) f.bubbleMode = "paint";
+      if (!f.bubbleMode || f.bubbleMode === "none") f.bubbleMode = "paint";
       const mx = t.x - t.px, mz = t.z - t.pz, moved = Math.hypot(mx, mz);
       if (f.bubbleMode === "herd") {
         for (let i = 0; i < MAX; i++) {
@@ -473,15 +535,18 @@ const bubbleScene = (() => {
     id: "bubbles", name: "Bubblor", group,
     chords: [[9, 0], [4, 0], [11, 0], [1, 1]],          // A E B C#m: IV I V vi, the lift that starts away from home
     sound: { voice: 1, ring: 4.5, wet: 0.55 },
+    views: VIEWS_AMONG,
     touchHeight: LEVEL, glowHeight: LEVEL,
     resize() {},
     update,
     tune() {},
-    enter() {},
-    exit() {},
+    // the meadow is lent to the world behind while the bubbles are out
+    enter() { if (meadowScene.group.parent) meadowScene.group.parent.remove(meadowScene.group); worldScene.add(meadowScene.group); meadowScene.enter(); },
+    exit() { worldScene.remove(meadowScene.group); },
     // a poke on a bubble pops it, and the finger herds the rest from there;
     // anywhere else it paints
     tap(f) {
+      if (!reaches(f)) { f.bubbleMode = "none"; return; }
       const k = bubbleAt(f.world);
       f.blowing = null; f.paintLeft = 0; f.holdTime = 0;
       if (k >= 0) { popNow(k); f.bubbleMode = "herd"; } else f.bubbleMode = "paint";
