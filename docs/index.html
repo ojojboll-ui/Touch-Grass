@@ -141,13 +141,18 @@ body {
 .scene-pick[aria-pressed="true"] { background: var(--pollen); color: var(--dusk); border-color: var(--pollen); }
 @media (prefers-reduced-motion: reduce) { #start, #hint { transition: none; } }
 /* the eye: two lids that close over a scene change and open on the next */
-.lid { position: fixed; left: -10vw; width: 120vw; height: 62vh; background: #050604; z-index: 30;
+/* each lid's edge arches away from the middle, as an eye's opening does, and
+   fades out softly over a wide band; shut, the lids overlap past the middle */
+.lid { position: fixed; left: -10vw; width: 120vw; height: 85vh; background: #050604; z-index: 30;
        pointer-events: none; transition: transform 0.34s cubic-bezier(0.55, 0, 0.75, 0.4); }
-.lid.top { top: 0; border-radius: 0 0 50% 50% / 0 0 34% 34%; transform: translateY(-104%);
-           box-shadow: 0 6px 18px 6px rgba(5, 6, 4, 0.55); }
-.lid.bot { bottom: 0; border-radius: 50% 50% 0 0 / 22% 22% 0 0; transform: translateY(104%);
-           box-shadow: 0 -6px 18px 6px rgba(5, 6, 4, 0.55); }
-.eye-shut .lid { transform: translateY(0); }
+.lid.top { top: 0; transform: translateY(-112%);
+           -webkit-mask-image: radial-gradient(ellipse 62% 34vh at 50% 100%, transparent 45%, #000 100%);
+                   mask-image: radial-gradient(ellipse 62% 34vh at 50% 100%, transparent 45%, #000 100%); }
+.lid.bot { bottom: 0; transform: translateY(112%);
+           -webkit-mask-image: radial-gradient(ellipse 62% 26vh at 50% 0%, transparent 45%, #000 100%);
+                   mask-image: radial-gradient(ellipse 62% 26vh at 50% 0%, transparent 45%, #000 100%); }
+.eye-shut .lid.top { transform: translateY(32vh); }
+.eye-shut .lid.bot { transform: translateY(-32vh); }
 .eye-opening .lid { transition: transform 0.6s cubic-bezier(0.2, 0.6, 0.3, 1); }
 </style>
 
@@ -3519,7 +3524,7 @@ const cloudScene = (() => {
 
 
 // ---- scene: bubbles ---------------------------------------------------------------
-// Soap bubbles over the summer meadow, seen out of focus. A finger drawn across empty air
+// Soap bubbles in a garden seen through a wide-open lens. A finger drawn across empty air
 // lets bubbles go along its path, big when it moves slowly and small when it
 // hurries; a finger held still blows one up under it until it lets go. Bubbles
 // that meet stick together into foam and drift as a clump. A poke pops a bubble
@@ -3540,7 +3545,7 @@ const cloudScene = (() => {
 // surface and drains toward the top, the path through it grows as the view
 // grazes, and red, green and blue fall in and out of step at different
 // thicknesses. Mostly clear facing you, mostly reflection at the rim. The
-// meadow behind is the meadow scene itself, blurred by depth of field.
+// garden behind is built only to be seen out of focus: shapes, colour and light.
 const bubbleScene = (() => {
   const group = new THREE.Group();
   const MAX = 160, MAX_WALLS = 320, NEAR = 6;   // bubbles, walls, and how many neighbours each one is cut by
@@ -3711,14 +3716,244 @@ const bubbleScene = (() => {
   walls.count = 0;
   group.add(walls);
 
-  // ---- the world behind: the summer meadow, out of focus ----
-  // The meadow scene itself, rendered on its own each frame (grass, flowers,
-  // butterflies, wind and all), then blurred by its distance from the bubbles
-  // in focus: a lens's depth of field. Every point spreads into a disc as wide
-  // as it is out of focus, and bright points more than dark ones, so glints
-  // and flowers turn into bokeh. Near grass and the far field both melt; the
-  // bubbles, drawn sharp over it, sit in the plane of focus.
+  // ---- the garden behind -----------------------------------------------------------
+  // A garden of its own, only ever seen through a wide-open lens: a lawn, a hedge,
+  // trees all round with the sun glinting through their leaves, flower beds, and
+  // strings of lights in the trees that come on at dusk. Nothing in it needs to
+  // be sharp, so it is built from spheres, boxes and cylinders; what matters is
+  // shape, colour and points of light, which the lens turns into bokeh.
   const worldScene = new THREE.Scene();
+  const gardenUniforms = Object.assign({ uNoise: { value: noiseTex }, uTime: { value: 0 }, uDay: { value: 1 }, uTrueSun: { value: new THREE.Vector3(0, 1, 0) } }, lightUniforms);
+  const WORLD_VERT = `
+    attribute vec3 aColor;
+    varying vec3 vWorld, vN, vColor;
+    void main() {
+      mat4 m = modelMatrix;
+      #ifdef USE_INSTANCING
+        m = modelMatrix * instanceMatrix;
+      #endif
+      vec4 w = m * vec4(position, 1.0);
+      vWorld = w.xyz; vN = normalize(mat3(m) * normal); vColor = aColor;
+      gl_Position = projectionMatrix * viewMatrix * w;
+    }`;
+  const WORLD_COMMON = `
+    uniform sampler2D uNoise; uniform float uTime, uDay; uniform vec3 uTrueSun;
+    uniform vec3 uSunDir, uSunCol, uAmbient, uFogCol; uniform float uFogDensity;
+    varying vec3 vWorld, vN, vColor;
+    ${TONEMAP}
+    float hash13(vec3 p) { p = fract(p * 0.1031); p += dot(p, p.zyx + 31.32); return fract((p.x + p.y) * p.z); }
+    // tone-mapped colour, then light brighter than white kept on top, so the lens can spread it
+    vec4 finish(vec3 lit, vec3 glow) {
+      float fog = 1.0 - exp(-uFogDensity * 0.8 * length(vWorld - cameraPosition));
+      return vec4(pow(tonemap(mix(lit, uFogCol, fog)), vec3(1.0 / 2.2)) + glow * (1.0 - fog), 1.0);
+    }
+  `;
+  const worldMat = (frag, extra = {}) => new THREE.ShaderMaterial(Object.assign({
+    uniforms: gardenUniforms, vertexShader: WORLD_VERT, fragmentShader: WORLD_COMMON + frag,
+  }, extra));
+  const colourAttr = (geo, count, pick) => {
+    const a = new Float32Array(count * 3);
+    for (let i = 0; i < count; i++) { const c = pick(i); a[i * 3] = c[0]; a[i * 3 + 1] = c[1]; a[i * 3 + 2] = c[2]; }
+    geo.setAttribute("aColor", new THREE.InstancedBufferAttribute(a, 3));
+  };
+  let seed = 4242;
+  const rnd = () => (seed = (seed * 1664525 + 1013904223) >>> 0) / 4294967296;
+  const mtx = new THREE.Matrix4(), qq = new THREE.Quaternion(), ss = new THREE.Vector3(), pp = new THREE.Vector3();
+  const place = (mesh, i, x, y, z, sx, sy, sz) => { pp.set(x, y, z); ss.set(sx, sy, sz); mtx.compose(pp, qq, ss); mesh.setMatrixAt(i, mtx); };
+
+  // the sky
+  const skyMat = new THREE.ShaderMaterial({
+    uniforms: gardenUniforms, side: THREE.BackSide, depthWrite: false,
+    vertexShader: "varying vec3 vDir; void main(){ vDir = position; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }",
+    fragmentShader: `
+      uniform vec3 uTrueSun, uSunCol, uFogCol; uniform float uDay;
+      varying vec3 vDir;
+      ${TONEMAP}
+      void main() {
+        vec3 d = normalize(vDir);
+        vec3 zen = mix(vec3(0.01, 0.015, 0.04), vec3(0.2, 0.4, 0.78), uDay);
+        vec3 sky = mix(uFogCol, zen, pow(clamp(d.y, 0.0, 1.0), 0.5));
+        float cs = max(dot(d, uTrueSun), 0.0);
+        sky += uSunCol * pow(cs, 12.0) * 0.5;
+        vec3 glow = vec3(1.0, 0.9, 0.7) * 6.0 * smoothstep(0.9993, 0.9996, cs);
+        gl_FragColor = vec4(pow(tonemap(sky), vec3(1.0 / 2.2)) + glow, 1.0);
+      }`,
+  });
+  const sky = new THREE.Mesh(new THREE.SphereGeometry(300, 32, 16), skyMat);
+  sky.frustumCulled = false;
+  worldScene.add(sky);
+
+  // the lawn, mown in stripes
+  const lawn = new THREE.Mesh(new THREE.PlaneGeometry(400, 400), worldMat(`
+    void main() {
+      vec2 xz = vWorld.xz;
+      float n = texture2D(uNoise, xz / 7.0).g * 0.6 + texture2D(uNoise, xz / 1.3).b * 0.4;
+      vec3 col = mix(vec3(0.10, 0.24, 0.05), vec3(0.22, 0.40, 0.08), n);
+      col *= 0.9 + 0.12 * step(0.5, fract(xz.x / 2.4));
+      vec3 lit = col * (uAmbient * 0.8 + uSunCol * max(uSunDir.y, 0.0) * 1.1);
+      gl_FragColor = finish(lit, vec3(0.0));
+    }`));
+  lawn.rotation.x = -Math.PI / 2;
+  worldScene.add(lawn);
+
+  // leaves: trees' crowns and the hedge, with the sun glinting through
+  const LEAF = `
+    void main() {
+      vec3 n = normalize(vN);
+      float leafy = texture2D(uNoise, vWorld.xz * 0.5 + vWorld.y * 0.21).g * 0.6 + texture2D(uNoise, vWorld.xy * 1.7).b * 0.4;
+      vec3 col = mix(vec3(0.04, 0.12, 0.03), vec3(0.22, 0.42, 0.08), leafy) * vColor;
+      float lam = max(dot(n, uSunDir), 0.0);
+      vec3 lit = col * (uAmbient * 0.6 + uSunCol * lam * 1.2);
+      // glints: some leaves catch the sun, and twinkle as they move
+      vec3 cell = floor(vWorld * 2.2);
+      float h = hash13(cell);
+      float tw = 0.5 + 0.5 * sin(uTime * (1.0 + 3.0 * h) + h * 50.0);
+      vec3 glow = uSunCol * step(0.93, h) * lam * tw * 0.4 * uDay;
+      gl_FragColor = finish(lit, glow);
+    }`;
+  const leafMat = worldMat(LEAF);
+  const TREES = 26, CROWN = 5;
+  const trunkGeo = new THREE.CylinderGeometry(0.14, 0.22, 1, 8);
+  colourAttr(trunkGeo, TREES, () => [1, 1, 1]);
+  const trunks = new THREE.InstancedMesh(trunkGeo, worldMat(`
+    void main() {
+      float lam = max(dot(normalize(vN), uSunDir), 0.0);
+      vec3 lit = vec3(0.16, 0.11, 0.07) * (uAmbient * 0.7 + uSunCol * lam);
+      gl_FragColor = finish(lit, vec3(0.0));
+    }`), TREES);
+  const crownGeo = new THREE.IcosahedronGeometry(1, 2);
+  colourAttr(crownGeo, TREES * CROWN, () => { const v = 0.75 + 0.5 * rnd(); return [v * (0.9 + 0.2 * rnd()), v, v * (0.8 + 0.3 * rnd())]; });
+  const crowns = new THREE.InstancedMesh(crownGeo, leafMat, TREES * CROWN);
+  const treeTops = [], glintSpots = [];
+  for (let i = 0; i < TREES; i++) {
+    // all round, leaving the middle open where the bubbles float
+    const a = (i / TREES) * Math.PI * 2 + rnd() * 0.3, r = 10 + rnd() * 18;
+    const x = Math.cos(a) * r, z = Math.sin(a) * r, h = 2.2 + rnd() * 2.5, size = 1.6 + rnd() * 1.6;
+    place(trunks, i, x, h / 2, z, 1, h, 1);
+    for (let k = 0; k < CROWN; k++) {
+      const s = size * (0.6 + 0.5 * rnd());
+      place(crowns, i * CROWN + k, x + (rnd() - 0.5) * size, h + size * 0.6 + (rnd() - 0.3) * size, z + (rnd() - 0.5) * size, s, s * 0.85, s);
+    }
+    treeTops.push([x, h + size, z, size]);
+    for (let g = 0; g < 8; g++) {
+      const a2 = rnd() * 6.28, up = rnd() * 0.9;
+      glintSpots.push([x + Math.cos(a2) * size * 0.9 * Math.sqrt(1 - up * up), h + size * (0.6 + up * 0.8), z + Math.sin(a2) * size * 0.9 * Math.sqrt(1 - up * up), size]);
+    }
+  }
+  worldScene.add(trunks, crowns);
+  // a hedge behind the lawn
+  const HEDGE = 40;
+  const hedgeGeo = new THREE.BoxGeometry(1, 1, 1, 2, 2, 2);
+  colourAttr(hedgeGeo, HEDGE, () => [0.85, 0.95, 0.85]);
+  const hedge = new THREE.InstancedMesh(hedgeGeo, leafMat, HEDGE);
+  for (let i = 0; i < HEDGE; i++) {
+    const a = (i / HEDGE) * Math.PI * 2, r = 15;
+    const box = new THREE.Object3D();
+    box.position.set(Math.cos(a) * r, 0.9, Math.sin(a) * r);
+    box.rotation.y = -a; box.scale.set(1.0, 1.8, 2.5);
+    box.updateMatrix(); hedge.setMatrixAt(i, box.matrix);
+  }
+  worldScene.add(hedge);
+
+  // flower beds: clusters of colour along the lawn
+  const BLOOMS = 700;
+  const bloomGeo = new THREE.IcosahedronGeometry(1, 1);
+  const PALETTE_BEDS = [[1.0, 0.25, 0.3], [1.0, 0.75, 0.15], [0.95, 0.95, 0.9], [0.7, 0.35, 0.95], [1.0, 0.5, 0.7], [0.35, 0.55, 1.0]];
+  const beds = Array.from({ length: 14 }, () => { const a = rnd() * 6.28, r = 4 + rnd() * 10; return [Math.cos(a) * r, Math.sin(a) * r, Math.floor(rnd() * 6)]; });
+  colourAttr(bloomGeo, BLOOMS, (i) => PALETTE_BEDS[(beds[i % beds.length][2] + (rnd() < 0.2 ? 1 : 0)) % 6]);
+  const blooms = new THREE.InstancedMesh(bloomGeo, worldMat(`
+    void main() {
+      float lam = max(dot(normalize(vN), uSunDir), 0.0) * 0.6 + 0.4;
+      vec3 lit = vColor * (uAmbient * 0.7 + uSunCol * lam * 1.1);
+      gl_FragColor = finish(lit, vColor * 0.4 * uDay * lam);
+    }`), BLOOMS);
+  for (let i = 0; i < BLOOMS; i++) {
+    const b = beds[i % beds.length];
+    const s = 0.07 + rnd() * 0.08;
+    place(blooms, i, b[0] + (rnd() - 0.5) * 2.4, 0.25 + rnd() * 0.4, b[1] + (rnd() - 0.5) * 1.6, s, s, s);
+  }
+  worldScene.add(blooms);
+
+  // strings of lights in the trees: faint by day, bright at dusk and after
+  const LIGHTS = 220;
+  const lightGeo = new THREE.IcosahedronGeometry(1, 1);
+  colourAttr(lightGeo, LIGHTS, () => (rnd() < 0.8 ? [1.0, 0.78, 0.45] : [1.0, 0.95, 0.85]));
+  const lights = new THREE.InstancedMesh(lightGeo, worldMat(`
+    void main() {
+      float on = mix(1.0, 0.25, uDay);
+      gl_FragColor = finish(vColor * (0.6 + 0.6 * on), vec3(0.0));
+    }`), LIGHTS);
+  for (let i = 0; i < LIGHTS; i++) {
+    // hung from one tree to the next, sagging between
+    const a = treeTops[Math.floor(i / (LIGHTS / TREES)) % TREES], b = treeTops[(Math.floor(i / (LIGHTS / TREES)) + 1) % TREES];
+    const t = (i % (LIGHTS / TREES)) / (LIGHTS / TREES);
+    const sag = Math.sin(t * Math.PI) * 1.2;
+    place(lights, i, a[0] + (b[0] - a[0]) * t, a[1] - a[3] * 0.6 + (b[1] - a[1]) * t - sag, a[2] + (b[2] - a[2]) * t, 0.12, 0.12, 0.12);
+  }
+  worldScene.add(lights);
+
+  // ---- bokeh: points of light spread into discs ----
+  // A lens turns each point of light out of focus into a disc as wide as it is
+  // out of focus. Blurring the picture afterwards cannot do that well for tiny
+  // bright points (they come out as a pattern of dots), so the lights in the
+  // trees and the sun glinting through the leaves are drawn here as discs of
+  // their own, over the blurred garden and under the bubbles: sized by their
+  // distance from the focus, dimmer the wider they spread, a little brighter
+  // at the rim, as real bokeh is.
+  const bokehPos = [], bokehCol = [], bokehKind = [];
+  for (let i = 0; i < LIGHTS; i++) {
+    lights.getMatrixAt(i, mtx); pp.setFromMatrixPosition(mtx);
+    const c = lightGeo.getAttribute("aColor");
+    bokehPos.push(pp.x, pp.y, pp.z); bokehCol.push(c.getX(i), c.getY(i), c.getZ(i)); bokehKind.push(0, rnd());
+  }
+  for (const [x, y, z, size] of glintSpots) {
+    bokehPos.push(x, y, z); bokehCol.push(1.0, 0.95, 0.8); bokehKind.push(1, rnd());
+  }
+  const bokehGeo = new THREE.BufferGeometry();
+  bokehGeo.setAttribute("position", new THREE.Float32BufferAttribute(bokehPos, 3));
+  bokehGeo.setAttribute("aColor", new THREE.Float32BufferAttribute(bokehCol, 3));
+  bokehGeo.setAttribute("aKind", new THREE.Float32BufferAttribute(bokehKind, 2));
+  const bokehMat = new THREE.ShaderMaterial({
+    uniforms: Object.assign({ uFocus: { value: 6 }, uDiscScale: { value: 40 }, uMaxDisc: { value: 120 } }, gardenUniforms),
+    transparent: true, depthWrite: false, depthTest: false, blending: THREE.AdditiveBlending,
+    vertexShader: `
+      attribute vec3 aColor; attribute vec2 aKind;
+      uniform float uFocus, uDiscScale, uMaxDisc, uTime, uDay;
+      uniform vec3 uSunDir;
+      varying vec3 vCol; varying float vGain;
+      void main() {
+        vec4 mv = modelViewMatrix * vec4(position, 1.0);
+        float d = -mv.z;
+        float disc = clamp(abs(1.0 - uFocus / d) * uDiscScale, 3.0, uMaxDisc);
+        gl_PointSize = disc;
+        gl_Position = projectionMatrix * mv;
+        // lights: faint by day, bright at dusk; glints: only by day, twinkling
+        float tw = 0.5 + 0.5 * sin(uTime * (1.2 + 3.0 * aKind.y) + aKind.y * 60.0);
+        float on = aKind.x < 0.5 ? mix(1.0, 0.18, uDay) : uDay * tw * tw * max(uSunDir.y, 0.0) * 0.7;
+        // the same light spread wider is dimmer, but not so dim it vanishes
+        vGain = on * clamp(pow(14.0 / disc, 0.9), 0.06, 1.0);
+        vCol = aColor;
+      }`,
+    fragmentShader: `
+      varying vec3 vCol; varying float vGain;
+      void main() {
+        float r = length(gl_PointCoord - 0.5) * 2.0;
+        if (r > 1.0) discard;
+        float disc = smoothstep(1.0, 0.86, r) * (0.75 + 0.25 * smoothstep(0.55, 0.95, r));
+        gl_FragColor = vec4(vCol * disc * vGain, 1.0);
+      }`,
+  });
+  const bokeh = new THREE.Points(bokehGeo, bokehMat);
+  bokeh.frustumCulled = false;
+  bokeh.renderOrder = 5;
+  group.add(bokeh);
+
+  // ---- the lens: a very shallow depth of field ----
+  // The garden is rendered at a quarter of the screen's size, with depth, and
+  // blurred by its distance from the bubbles in focus, as by a lens opened
+  // wide: every point spreads into a disc as wide as it is out of focus, bright
+  // points more than dark ones, so glints and lights turn into bokeh. Only the
+  // plane of the bubbles is sharp; the bubbles are drawn sharp over it.
   const worldSize = new THREE.Vector2(2, 2);
   function halfTarget(depth) {
     const t = new THREE.WebGLRenderTarget(2, 2, {
@@ -3729,20 +3964,25 @@ const bubbleScene = (() => {
     return t;
   }
   const worldRT = halfTarget(true), cocRT = halfTarget(false), dofRT = halfTarget(false);
-  const MAX_BLUR = 20;                       // pixels at half resolution
+  const MAX_BLUR = 18;                       // pixels at a quarter of the resolution
   // how far out of focus each pixel is, kept beside its colour
   const cocMat = new THREE.ShaderMaterial({
     vertexShader: PASS_VERT,
     uniforms: { uColor: { value: worldRT.texture }, uDepth: { value: worldRT.depthTexture }, uNear: { value: 0.5 }, uFar: { value: 400 },
-                uFocus: { value: 6 }, uAperture: { value: 14 } },
+                uFocus: { value: 6 }, uAperture: { value: 14 }, uPx: { value: new THREE.Vector2(0.01, 0.01) } },
     fragmentShader: `
-      uniform sampler2D uColor, uDepth; uniform float uNear, uFar, uFocus, uAperture;
+      uniform sampler2D uColor, uDepth; uniform float uNear, uFar, uFocus, uAperture; uniform vec2 uPx;
       varying vec2 vUv;
       void main() {
         float z = texture2D(uDepth, vUv).r * 2.0 - 1.0;
         float dist = 2.0 * uNear * uFar / (uFar + uNear - z * (uFar - uNear));
         float coc = clamp(abs(1.0 - uFocus / dist) * uAperture, 0.0, ${MAX_BLUR}.0);
-        gl_FragColor = vec4(texture2D(uColor, vUv).rgb, coc / ${MAX_BLUR}.0);
+        // a small tent filter first: a point of light a pixel wide would only be
+        // caught now and then by the spiral below, and come out as dots
+        vec3 c = texture2D(uColor, vUv).rgb * 0.4
+               + (texture2D(uColor, vUv + vec2(uPx.x, uPx.y)).rgb + texture2D(uColor, vUv + vec2(-uPx.x, uPx.y)).rgb
+                + texture2D(uColor, vUv + vec2(uPx.x, -uPx.y)).rgb + texture2D(uColor, vUv - uPx).rgb) * 0.15;
+        gl_FragColor = vec4(c, coc / ${MAX_BLUR}.0);
       }`,
   });
   // the gather, after Dennis Gustafsson's single-pass bokeh: a golden-angle
@@ -3769,7 +4009,7 @@ const bubbleScene = (() => {
           float w = m * (1.0 + 7.0 * luma * luma * luma * luma);
           sum += mix(sum / tot, s.rgb, m) * max(w, 1.0 - m);
           tot += max(w, 1.0 - m);
-          ang += 2.39996323; r += 4.0 / r;
+          ang += 2.39996323; r += 2.6 / r;
         }
         gl_FragColor = vec4(sum / tot, 1.0);
       }`,
@@ -3787,18 +4027,27 @@ const bubbleScene = (() => {
   const bufSize = new THREE.Vector2();
   function renderWorld(dt, touches, time) {
     renderer.getDrawingBufferSize(bufSize);
-    const w = Math.max(2, Math.round(bufSize.x / 2)), h = Math.max(2, Math.round(bufSize.y / 2));
+    const w = Math.max(2, Math.round(bufSize.x / 4)), h = Math.max(2, Math.round(bufSize.y / 4));
     if (w !== worldSize.x || h !== worldSize.y) {
       worldSize.set(w, h);
       for (const t of [worldRT, cocRT, dofRT]) t.setSize(w, h);
       dofMat.uniforms.uPixel.value.set(1 / w, 1 / h);
+      cocMat.uniforms.uPx.value.set(1 / w, 1 / h);
     }
-    meadowScene.update(dt, touches, time);
+    gardenUniforms.uTime.value = time;
+    const sun = sunDirection(hour);
+    gardenUniforms.uTrueSun.value.copy(sun);
+    gardenUniforms.uDay.value = smooth(-0.12, 0.2, sun.y);
+    sky.position.copy(camera.position);
     renderer.setRenderTarget(worldRT);
     renderer.render(worldScene, camera);
     cocMat.uniforms.uNear.value = camera.near; cocMat.uniforms.uFar.value = camera.far;
     cocMat.uniforms.uFocus.value = Math.max(1, camera.position.distanceTo(focusAt.set(currentLook.x, LEVEL, currentLook.z)));
-    cocMat.uniforms.uAperture.value = 34 * h / 400;
+    cocMat.uniforms.uAperture.value = 60 * h / 200;   // wide open: a metre off the focus is already soft
+    // the light discs are drawn at full size: the same lens, four times the pixels
+    bokehMat.uniforms.uFocus.value = cocMat.uniforms.uFocus.value;
+    bokehMat.uniforms.uDiscScale.value = 2 * cocMat.uniforms.uAperture.value * (bufSize.x / w);
+    bokehMat.uniforms.uMaxDisc.value = 2 * MAX_BLUR * (bufSize.x / w);
     passQuad.material = cocMat;
     renderer.setRenderTarget(cocRT);
     renderer.render(passScene, passCam);
@@ -3816,11 +4065,11 @@ const bubbleScene = (() => {
     return Math.hypot(reachHit.x - camera.position.x, reachHit.z - camera.position.z) < 22;
   }
 
-  // seen from among the bubbles, the meadow running off behind them
+  // seen from among the bubbles, the garden behind them
   const VIEWS_AMONG = [
     { name: "Bland bubblorna", pos: [0.0, 3.0, 7.0], look: [0, 1.3, 0.0], fov: 50 },
     { name: "Snett ovanifrån", pos: [0.0, 6.0, 8.0], look: [0, 1.2, 0.0], fov: 52 },
-    { name: "Över ängen",      pos: [3.5, 4.2, 6.5], look: [-0.5, 1.2, -1.0], fov: 52 },
+    { name: "Över gräsmattan", pos: [3.5, 4.2, 6.5], look: [-0.5, 1.2, -1.0], fov: 52 },
   ];
 
   // ---- making and popping ----
@@ -4061,8 +4310,8 @@ const bubbleScene = (() => {
     update,
     tune() {},
     // the meadow is lent to the world behind while the bubbles are out
-    enter() { if (meadowScene.group.parent) meadowScene.group.parent.remove(meadowScene.group); worldScene.add(meadowScene.group); meadowScene.enter(); },
-    exit() { worldScene.remove(meadowScene.group); },
+    enter() {},
+    exit() {},
     // a poke on a bubble pops it, and the finger herds the rest from there;
     // anywhere else it paints
     tap(f) {

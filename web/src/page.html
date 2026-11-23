@@ -140,13 +140,18 @@ body {
 .scene-pick[aria-pressed="true"] { background: var(--pollen); color: var(--dusk); border-color: var(--pollen); }
 @media (prefers-reduced-motion: reduce) { #start, #hint { transition: none; } }
 /* the eye: two lids that close over a scene change and open on the next */
-.lid { position: fixed; left: -10vw; width: 120vw; height: 62vh; background: #050604; z-index: 30;
+/* each lid's edge arches away from the middle, as an eye's opening does, and
+   fades out softly over a wide band; shut, the lids overlap past the middle */
+.lid { position: fixed; left: -10vw; width: 120vw; height: 85vh; background: #050604; z-index: 30;
        pointer-events: none; transition: transform 0.34s cubic-bezier(0.55, 0, 0.75, 0.4); }
-.lid.top { top: 0; border-radius: 0 0 50% 50% / 0 0 34% 34%; transform: translateY(-104%);
-           box-shadow: 0 6px 18px 6px rgba(5, 6, 4, 0.55); }
-.lid.bot { bottom: 0; border-radius: 50% 50% 0 0 / 22% 22% 0 0; transform: translateY(104%);
-           box-shadow: 0 -6px 18px 6px rgba(5, 6, 4, 0.55); }
-.eye-shut .lid { transform: translateY(0); }
+.lid.top { top: 0; transform: translateY(-112%);
+           -webkit-mask-image: radial-gradient(ellipse 62% 34vh at 50% 100%, transparent 45%, #000 100%);
+                   mask-image: radial-gradient(ellipse 62% 34vh at 50% 100%, transparent 45%, #000 100%); }
+.lid.bot { bottom: 0; transform: translateY(112%);
+           -webkit-mask-image: radial-gradient(ellipse 62% 26vh at 50% 0%, transparent 45%, #000 100%);
+                   mask-image: radial-gradient(ellipse 62% 26vh at 50% 0%, transparent 45%, #000 100%); }
+.eye-shut .lid.top { transform: translateY(32vh); }
+.eye-shut .lid.bot { transform: translateY(-32vh); }
 .eye-opening .lid { transition: transform 0.6s cubic-bezier(0.2, 0.6, 0.3, 1); }
 </style>
 
