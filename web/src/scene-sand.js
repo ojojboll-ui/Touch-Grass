@@ -403,7 +403,7 @@ const sandScene = (() => {
 
   return {
     id: "sand", name: "Sand", group,
-    chords: [[2, 0], [11, 1], [7, 0], [9, 0]],          // D Bm G A: I vi IV V, the fifties doo-wop turn
+    chords: [[2, 2], [3, 0], [7, 1], [0, 1]],           // D7 Eb Gm Cm: D Hijaz (Phrygian dominant), the flat second of the ney and the oud
     sound: { voice: 5, ring: 5, wet: 0.42 },
     touchHeight: 0.0, glowHeight: 0.04,
     resize() {},
